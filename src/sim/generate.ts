@@ -10,6 +10,7 @@ export interface IslandInfo {
   center: [number, number, number];
   lake: [number, number, number];
   mountain: [number, number, number];
+  waterfall: [number, number, number];
 }
 
 function smoothstep(a: number, b: number, x: number) {
@@ -132,8 +133,23 @@ export function generateIsland(world: World, seed: number): IslandInfo {
       const x = Math.round(lx + (mx - lx) * f), z = Math.round(lz + (mz - lz) * f);
       const hi = top[x + z * SX];
       if (hi >= WL + 7 && hi < 48) {
+        // a gentle trickle that runs down into the lake
         mat[idx(x, hi, z)] = M.SPRING;
-        if (top[x + 1 + z * SX] >= hi - 1) mat[idx(x + 1, top[x + 1 + z * SX], z)] = M.SPRING;
+        world.life[idx(x, hi, z)] = 1;
+        break;
+      }
+    }
+  }
+  // Main spring at the head of the waterfall channel keeps the falls running
+  {
+    for (let t = lakeR + 1; t < lakeR + 8; t += 1) {
+      const x = Math.round(lx + chDx * t), z = Math.round(lz + chDz * t);
+      if (x < 1 || z < 1 || x >= SX - 1 || z >= SZ - 1) break;
+      if (kind[x + z * SX] === 3 && top[x + z * SX] === WL - 1) {
+        for (const [ox, oz] of [[0, 0], [-Math.round(chDz), Math.round(chDx)], [Math.round(chDz), -Math.round(chDx)]]) {
+          const c = x + ox + (z + oz) * SX;
+          if (kind[c] === 3 && top[c] === WL - 1) mat[idx(x + ox, WL - 1, z + oz)] = M.SPRING;
+        }
         break;
       }
     }
@@ -222,8 +238,16 @@ export function generateIsland(world: World, seed: number): IslandInfo {
       temp[i] = m === M.LAVA ? 1200 : m === M.SNOW ? Math.min(amb, -2) : amb;
     }
   }
+  // where the channel leaves the island (for camera framing)
+  let fx = lx, fz = lz;
+  for (let t = 0; t < 80; t++) {
+    const x = Math.round(lx + chDx * t), z = Math.round(lz + chDz * t);
+    if (x < 0 || z < 0 || x >= SX || z >= SZ || top[x + z * SX] < 0) break;
+    fx = x; fz = z;
+  }
   world.markAllDirty();
   return {
+    waterfall: [fx, WL, fz],
     center: [cx, WL, cz],
     lake: [lx, WL, lz],
     mountain: [mx, 50, mz],

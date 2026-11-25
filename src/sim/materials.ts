@@ -116,7 +116,7 @@ export const MATERIALS: Material[] = [
     density: 1800, color: 0x8e8780, color2: 0x6f6a66, variation: 0.22, conductivity: 0.05, meltPoint: 1200, meltTo: M.LAVA,
     diag: 0.85, slide: 0.05, hardness: 0.3 }),
   mat({ id: M.WATER, name: 'Water', desc: 'Flows and levels out. Freezes at 0 °C, boils at 100 °C.', state: State.LIQUID,
-    density: 1000, color: 0x2f86d0, color2: 0x45a6e0, variation: 0.03, alpha: 0.62, conductivity: 0.12, relax: 0.002,
+    density: 1000, color: 0x2a86c8, color2: 0x2f8fd0, variation: 0.02, alpha: 0.6, conductivity: 0.12, relax: 0.002,
     freezePoint: -0.5, freezeTo: M.ICE, meltPoint: 100, meltTo: M.STEAM, dispersion: 5 }),
   mat({ id: M.OIL, name: 'Oil', desc: 'Lighter than water so it floats. Very flammable.', state: State.LIQUID,
     density: 850, color: 0x3a2c1c, color2: 0x55402a, variation: 0.03, alpha: 0.9, conductivity: 0.05, flammability: 0.6,

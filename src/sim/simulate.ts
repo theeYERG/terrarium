@@ -138,17 +138,19 @@ export class Simulator {
     if (keepAwake && w.awake[c] < 2) w.awake[c] = 2;
   }
 
+  /** A spring pushes water into every open side, every tick. */
   private spring(i: number, x: number, y: number, z: number) {
     const w = this.w;
-    if (w.rng.next() > 0.55) return;
-    const k = w.rng.int(5);
-    let n = -1;
-    if (k === 0 && y < SY - 1) n = i + LAYER;
-    else if (k === 1 && x > 0) n = i - 1;
-    else if (k === 2 && x < SX - 1) n = i + 1;
-    else if (k === 3 && z > 0) n = i - SX;
-    else if (k === 4 && z < SZ - 1) n = i + SX;
-    if (n >= 0 && w.mat[n] === M.AIR) w.place(n, M.WATER);
+    const rate = w.life[i] === 1 ? 0.06 : 0.8; // life=1 marks a gentle trickle
+    for (let k = 0; k < 5; k++) {
+      let n = -1;
+      if (k === 0 && y < SY - 1) n = i + LAYER;
+      else if (k === 1 && x > 0) n = i - 1;
+      else if (k === 2 && x < SX - 1) n = i + 1;
+      else if (k === 3 && z > 0) n = i - SX;
+      else if (k === 4 && z < SZ - 1) n = i + SX;
+      if (n >= 0 && w.mat[n] === M.AIR && w.rng.next() < rate) w.place(n, M.WATER);
+    }
   }
 
   /** Can a falling cell of material m enter cell j? (empty / gas, or a lighter liquid) */
@@ -305,15 +307,20 @@ export class Simulator {
       }
     }
 
-    // a lone droplet on a flat surface slowly evaporates instead of wandering forever
-    if (m === M.WATER && rng.next() < 0.004 && y < SY - 1 && T_MOVABLE[mat[i + LAYER]]) {
-      let wet = 0;
-      for (let d = 0; d < 4; d++) {
-        const nx = x + H8X[d], nz = z + H8Z[d];
-        if (nx < 0 || nz < 0 || nx >= SX || nz >= SZ) continue;
-        if (mat[nx + nz * SX + y * LAYER] === M.WATER) wet++;
+    // A lone droplet can't spread thinner than one voxel, so in a cellular automaton it
+    // would wander forever. Real water would spread into a film / soak in / evaporate,
+    // so isolated surface droplets fade away (quickly when sitting on top of a lake).
+    if (m === M.WATER && y < SY - 1 && T_MOVABLE[mat[i + LAYER]]) {
+      const onWater = y > 0 && mat[i - LAYER] === M.WATER;
+      if (rng.next() < (onWater ? 0.05 : 0.012)) {
+        let wet = 0;
+        for (let d = 0; d < 4; d++) {
+          const nx = x + H8X[d], nz = z + H8Z[d];
+          if (nx < 0 || nz < 0 || nx >= SX || nz >= SZ) continue;
+          if (mat[nx + nz * SX + y * LAYER] === M.WATER) wet++;
+        }
+        if (wet === 0 || (onWater && wet === 1)) w.set(i, M.AIR);
       }
-      if (wet === 0) w.set(i, M.AIR);
     }
   }
 

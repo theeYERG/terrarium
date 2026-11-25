@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+    <meta name="theme-color" content="#0f1b33" />
+    <meta name="description" content="Terrarium: a relaxing 3D voxel physics sandbox on a tiny floating island." />
+    <title>Terrarium</title>
+    <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+  </head>
+  <body>
+    <canvas id="view" tabindex="0"></canvas>
+    <div id="hud" class="hidden"></div>
+    <div id="tip"></div>
+    <div id="shutter"></div>
+    <div id="title">
+      <div class="card">
+        <svg class="mark" viewBox="0 0 64 64" id="title-logo"></svg>
+        <h1>Terrarium</h1>
+        <p>A tiny floating world to dig, flood, burn and blow up.</p>
+        <div class="bar"><i id="load-bar"></i></div>
+        <div class="label" id="load-label">Waking up…</div>
+        <button class="btn primary enter" id="enter">Enter the terrarium</button>
+        <div class="hint">Right-drag to orbit · scroll to zoom · left-click to use a tool</div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
