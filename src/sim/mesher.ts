@@ -1,320 +1,405 @@
-// Greedy chunk mesher with per-vertex ambient occlusion.
-// Faces are merged only when material, AO and glow level all match. Per-voxel colour
-// variation is done in the fragment shader from the world position, so it doesn't
-// prevent merging.
+// Low poly chunk mesher: Surface Nets over the voxel fill field.
+//
+// Terrain: density = fill (0..1) of solid/powder cells, iso 0.5. One vertex per dual cube
+// (average of edge crossings) with a small position-seeded jitter, quads split into two
+// triangles, emitted NON-indexed so every triangle has its own flat normal and colour.
+// Vertex colours blend the palette colours of the surrounding materials (grass fades into
+// dirt, sand into stone), faces get a hashed shade and a soft ambient-occlusion term.
+//
+// Liquids: a second Surface Nets pass over liquid mass, extended into touching solids so
+// the liquid surface tucks inside the terrain instead of leaving seams.
 
 import { CS, CX, CZ, LAYER, SX, SY, SZ } from './constants.ts';
-import { M, T_MOVABLE, T_OPAQUE, T_STATE, T_TRANSLUCENT } from './materials.ts';
+import { M, MAT_COUNT, State, T_STATE } from './materials.ts';
 import type { World } from './world.ts';
 
-/** Vertex positions are stored as Uint16 fixed point: (local + POS_OFFSET) * POS_SCALE,
- *  which allows sub-voxel detail (lowered liquid surfaces, waterfall streaks). */
-export const POS_SCALE = 16;
-export const POS_OFFSET = 4;
-
-export interface MeshBuffers {
-  pos: Uint16Array;
+export interface TerrainBuffers {
+  pos: Float32Array; // local to chunk origin
   nrm: Int8Array;
-  data: Uint8Array;
-  idx: Uint16Array | Uint32Array;
+  col: Uint8Array; // sRGB, current material colour
+  col0: Uint8Array; // sRGB, colour before the last material change
+  tchg: Float32Array; // sim time of that change (for the colour lerp)
+  aux: Uint8Array; // [heat glow 0-255, material, 0, 0]
+}
+
+export interface LiquidBuffers {
+  pos: Float32Array;
+  nrm: Int8Array;
+  aux: Uint8Array; // [liquid material, depth 0-255, foam 0-255, lava heat 0-255]
 }
 
 export interface ChunkMesh {
   c: number;
-  opaque: MeshBuffers | null;
-  trans: MeshBuffers | null;
+  /** false: the terrain mesh didn't change, keep the old one (terrain/collider are null) */
+  hasTerrain: boolean;
+  terrain: TerrainBuffers | null;
+  liquid: LiquidBuffers | null;
+  /** world-space triangle soup for the physics collider (terrain only) */
+  collider: Float32Array | null;
   mats: Uint8Array; // CS³ copy of materials, local index lx + lz*16 + ly*256
-  lava: number; // count of glowing cells for light clustering
+  fills: Uint8Array; // CS³ copy of fill / liquid mass (0..255)
+  lava: number;
   lavaPos: [number, number, number];
 }
 
-const MAX_QUADS = 6 * CS * CS * CS / 2 + 64;
+// ───────────────────────────── palette ─────────────────────────────
+// Three shades per material (light, mid, dark), sRGB. Kept soft and cohesive.
+export const PALETTE: Record<number, [number, number, number]> = {
+  [M.STONE]: [0x9aa0a6, 0x868c93, 0x737980],
+  [M.DIRT]: [0xa27350, 0x8f6444, 0x7b5639],
+  [M.GRASS]: [0x86c95a, 0x74b84c, 0x63a742],
+  [M.SAND]: [0xeed6a0, 0xe3c98e, 0xd5b97c],
+  [M.GRAVEL]: [0xa69d94, 0x938a82, 0x7f7770],
+  [M.ICE]: [0xcdeefa, 0xb9e3f4, 0xa5d6ec],
+  [M.SNOW]: [0xeef3f8, 0xe2e9f1, 0xd3dce8],
+  [M.WOOD]: [0x8b5e3c, 0x7a5033, 0x68442b],
+  [M.LEAVES]: [0x6fb85a, 0x5ea84d, 0x4f9641],
+  [M.GLASS]: [0xd8f2f6, 0xc8e8ee, 0xb8dde6],
+  [M.OBSIDIAN]: [0x4a3d63, 0x3d3254, 0x312846],
+  [M.MUD]: [0x7a5a3e, 0x6a4c33, 0x5b402b],
+  [M.GUNPOWDER]: [0x55555e, 0x48484f, 0x3c3c42],
+  [M.METAL]: [0xc4cad2, 0xb0b7c0, 0x9ca3ad],
+  [M.SPRING]: [0x6fa9b8, 0x5f97a6, 0x4f8594],
+  [M.EMBER]: [0xffa050, 0xff8a3a, 0xf07028],
+  [M.LAVA]: [0xff7a2a, 0xff6a1e, 0xf05a14],
+};
+const CLIFF = [0xa27a55, 0x8d6a49, 0x7a5c40]; // steep grass faces
+const ROCKFACE = [0xa9adb2, 0x969ba1, 0x84898f]; // steep snow faces
 
-class Builder {
-  pos = new Uint16Array(MAX_QUADS * 4 * 3);
-  nrm = new Int8Array(MAX_QUADS * 4 * 3);
-  data = new Uint8Array(MAX_QUADS * 4 * 4);
-  idx = new Uint32Array(MAX_QUADS * 6);
-  quads = 0;
+const PAL_R = new Float32Array(MAT_COUNT * 3);
+const PAL_G = new Float32Array(MAT_COUNT * 3);
+const PAL_B = new Float32Array(MAT_COUNT * 3);
+for (let m = 0; m < MAT_COUNT; m++) {
+  const p = PALETTE[m] ?? [0x999999, 0x888888, 0x777777];
+  for (let k = 0; k < 3; k++) {
+    PAL_R[m * 3 + k] = (p[k] >> 16) & 255;
+    PAL_G[m * 3 + k] = (p[k] >> 8) & 255;
+    PAL_B[m * 3 + k] = p[k] & 255;
+  }
+}
+const hexR = (h: number) => (h >> 16) & 255, hexG = (h: number) => (h >> 8) & 255, hexB = (h: number) => h & 255;
 
+/** Cells that form terrain (meshed by the terrain pass). */
+export const IS_TERRAIN = new Uint8Array(MAT_COUNT);
+for (let m = 0; m < MAT_COUNT; m++) IS_TERRAIN[m] = T_STATE[m] === State.SOLID || T_STATE[m] === State.POWDER ? 1 : 0;
+
+export function hash3(x: number, y: number, z: number): number {
+  let h = (x * 374761393 + y * 668265263 + z * 2147483647) | 0;
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+}
+
+export function glowLevel(_m: number, t: number): number {
+  if (t < 480) return 0;
+  return Math.min(255, Math.round((t - 480) * 0.25));
+}
+
+// ───────────────────────────── scratch ─────────────────────────────
+const N = CS + 3; // samples from -1 .. CS+1
+const NN = N * N * N;
+const dens = new Float32Array(NN);
+const smat = new Uint8Array(NN);
+const vidx = new Int32Array(NN);
+const vx = new Float32Array(NN * 3);
+const vcol = new Float32Array(NN * 3);
+const vcol0 = new Float32Array(NN * 3);
+const vt = new Float32Array(NN);
+const vglow = new Float32Array(NN);
+const vao = new Float32Array(NN);
+const vmat = new Uint8Array(NN);
+const vdepth = new Float32Array(NN);
+const vfoam = new Float32Array(NN);
+const cs = new Float32Array(8);
+
+class Soup {
+  pos: number[] = [];
+  nrm: number[] = [];
+  a: number[] = [];
+  b: number[] = [];
+  t: number[] = [];
   reset() {
-    this.quads = 0;
-  }
-
-  /** v: 4 corners (x,y,z) in CCW order seen from outside. */
-  quad(v: number[], n: number[], mat: number, ao: number[], glow: number, face: number) {
-    if (this.quads >= MAX_QUADS) return;
-    const q = this.quads++;
-    const vb = q * 4;
-    for (let k = 0; k < 4; k++) {
-      const o = (vb + k) * 3;
-      this.pos[o] = Math.round((v[k * 3] + POS_OFFSET) * POS_SCALE);
-      this.pos[o + 1] = Math.round((v[k * 3 + 1] + POS_OFFSET) * POS_SCALE);
-      this.pos[o + 2] = Math.round((v[k * 3 + 2] + POS_OFFSET) * POS_SCALE);
-      this.nrm[o] = n[0] * 127;
-      this.nrm[o + 1] = n[1] * 127;
-      this.nrm[o + 2] = n[2] * 127;
-      const d = (vb + k) * 4;
-      this.data[d] = mat;
-      this.data[d + 1] = ao[k];
-      this.data[d + 2] = glow;
-      this.data[d + 3] = face;
-    }
-    const io = q * 6;
-    // flip the diagonal so AO interpolates without the classic anisotropy artefact
-    if (ao[0] + ao[2] < ao[1] + ao[3]) {
-      this.idx[io] = vb + 1; this.idx[io + 1] = vb + 2; this.idx[io + 2] = vb + 3;
-      this.idx[io + 3] = vb + 1; this.idx[io + 4] = vb + 3; this.idx[io + 5] = vb;
-    } else {
-      this.idx[io] = vb; this.idx[io + 1] = vb + 1; this.idx[io + 2] = vb + 2;
-      this.idx[io + 3] = vb; this.idx[io + 4] = vb + 2; this.idx[io + 5] = vb + 3;
-    }
-  }
-
-  build(): MeshBuffers | null {
-    if (this.quads === 0) return null;
-    const nv = this.quads * 4;
-    const ni = this.quads * 6;
-    const idx = nv > 65535 ? this.idx.slice(0, ni) : Uint16Array.from(this.idx.subarray(0, ni));
-    return {
-      pos: this.pos.slice(0, nv * 3),
-      nrm: this.nrm.slice(0, nv * 3),
-      data: this.data.slice(0, nv * 4),
-      idx,
-    };
+    this.pos.length = 0; this.nrm.length = 0; this.a.length = 0; this.b.length = 0; this.t.length = 0;
   }
 }
+const soupT = new Soup();
+const soupL = new Soup();
 
-const opaqueB = new Builder();
-const transB = new Builder();
-const maskO = new Int32Array(CS * CS);
-const maskT = new Int32Array(CS * CS);
-const falling = new Uint8Array(CS * CS * CS);
-const SURFACE = 1 << 16;
-const DROP = 0.125; // liquid surfaces sit this far below the top of their voxel
-const FULL_AO = [3, 3, 3, 3];
+const S = (x: number, y: number, z: number) => (x + 1) + (y + 1) * N + (z + 1) * N * N;
 
-/** Emit an axis-aligned box (used for falling-liquid streaks). */
-function box(b: Builder, lo: number[], hi: number[], m: number, skipTop: boolean) {
-  const v = new Array(12);
-  const n = [0, 0, 0];
-  for (let d = 0; d < 3; d++) {
-    const u = (d + 1) % 3, w = (d + 2) % 3;
-    for (let side = -1; side <= 1; side += 2) {
-      if (d === 1 && side > 0 && skipTop) continue;
-      n[0] = n[1] = n[2] = 0;
-      n[d] = side;
-      const plane = side > 0 ? hi[d] : lo[d];
-      const c = [[lo[u], lo[w]], [hi[u], lo[w]], [hi[u], hi[w]], [lo[u], hi[w]]];
-      const order = side > 0 ? [0, 1, 2, 3] : [0, 3, 2, 1];
-      for (let k = 0; k < 4; k++) {
-        const cc = c[order[k]];
-        v[k * 3 + d] = plane;
-        v[k * 3 + u] = cc[0];
-        v[k * 3 + w] = cc[1];
-      }
-      b.quad(v, n, m, FULL_AO, 0, d * 2 + (side > 0 ? 0 : 1));
-    }
-  }
-}
+// cube corners (bit 0 = x, bit 1 = y, bit 2 = z) and the 12 edges between them
+const CORNER = new Int8Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0, 0, 0, 1, 1, 0, 1, 0, 1, 1, 1, 1, 1]);
+const COFF = [0, 1, N, N + 1, N * N, N * N + 1, N * N + N, N * N + N + 1];
+const EDGE_A = [0, 2, 4, 6, 0, 1, 4, 5, 0, 1, 2, 3];
+const EDGE_B = [1, 3, 5, 7, 2, 3, 6, 7, 4, 5, 6, 7];
 
-export function glowLevel(m: number, t: number): number {
-  if (t < 480 || m === M.LAVA) return 0;
-  return Math.min(7, Math.floor((t - 480) / 120) + 1);
-}
-
-export function meshChunk(world: World, c: number): ChunkMesh {
-  const { mat, temp } = world;
+export function meshChunk(world: World, c: number, doTerrain = true): ChunkMesh {
+  const { mat, fill, temp, mass, prevMat, changeT, foam } = world;
   const ccx = c % CX, ccz = Math.floor(c / CX) % CZ, ccy = Math.floor(c / (CX * CZ));
   const ox = ccx * CS, oy = ccy * CS, oz = ccz * CS;
 
-  const get = (x: number, y: number, z: number): number => {
-    if (x < 0 || y < 0 || z < 0 || x >= SX || y >= SY || z >= SZ) return M.AIR;
-    return mat[x + z * SX + y * LAYER];
-  };
-  const occ = (x: number, y: number, z: number): number => T_OPAQUE[get(x, y, z)];
-
-  opaqueB.reset();
-  transB.reset();
-  falling.fill(0);
-  const fallList: number[] = [];
-  for (let y = 0; y < CS; y++) for (let z = 0; z < CS; z++) for (let x = 0; x < CS; x++) {
-    const wi = ox + x + (oz + z) * SX + (oy + y) * LAYER;
-    const m = mat[wi];
-    if (!T_TRANSLUCENT[m] || T_STATE[m] !== 3) continue;
-    if (oy + y === 0 || T_MOVABLE[mat[wi - LAYER]]) {
-      falling[x + z * CS + y * CS * CS] = 1;
-      fallList.push(x, y, z, m);
-    }
+  // ── terrain density for cells -1..CS+1 (also used for liquid materials below)
+  for (let z = -1; z <= CS + 1; z++) for (let y = -1; y <= CS + 1; y++) for (let x = -1; x <= CS + 1; x++) {
+    const wx = ox + x, wy = oy + y, wz = oz + z;
+    const s = S(x, y, z);
+    if (wx < 0 || wy < 0 || wz < 0 || wx >= SX || wy >= SY || wz >= SZ) { dens[s] = 0; smat[s] = 0; continue; }
+    const i = wx + wz * SX + wy * LAYER;
+    const m = mat[i];
+    smat[s] = m;
+    dens[s] = IS_TERRAIN[m] ? fill[i] / 255 : 0;
   }
-  const p = [0, 0, 0];
-  const q = [0, 0, 0];
-  const du = [0, 0, 0];
-  const dv = [0, 0, 0];
-  const nrm = [0, 0, 0];
-  const ao = [0, 0, 0, 0];
-  const verts = new Array(12);
+  soupT.reset();
+  const terrain = doTerrain && surfaceNets(true) ? packTerrain() : null;
+  const collider = terrain ? colliderFrom(terrain.pos, ox, oy, oz) : null;
 
-  for (let d = 0; d < 3; d++) {
-    const u = (d + 1) % 3, v = (d + 2) % 3;
-    const eu = [0, 0, 0], ev = [0, 0, 0];
-    eu[u] = 1; ev[v] = 1;
-    for (let side = -1; side <= 1; side += 2) {
-      const face = d * 2 + (side > 0 ? 0 : 1);
-      nrm[0] = nrm[1] = nrm[2] = 0;
-      nrm[d] = side;
-      for (let s = 0; s < CS; s++) {
-        // build masks
-        for (let j = 0; j < CS; j++) {
-          for (let i = 0; i < CS; i++) {
-            p[d] = s; p[u] = i; p[v] = j;
-            const wx = ox + p[0], wy = oy + p[1], wz = oz + p[2];
-            const m = mat[wx + wz * SX + wy * LAYER];
-            const mi = i + j * CS;
-            maskO[mi] = 0;
-            maskT[mi] = 0;
-            if (m === M.AIR) continue;
-            const isO = T_OPAQUE[m], isT = T_TRANSLUCENT[m];
-            if (!isO && !isT) continue;
-            if (isT && falling[p[0] + p[2] * CS + p[1] * CS * CS]) continue;
-            q[0] = wx; q[1] = wy; q[2] = wz;
-            q[d] += side;
-            const nm = get(q[0], q[1], q[2]);
-            let visible = false;
-            if (isO) visible = !T_OPAQUE[nm];
-            else visible = nm !== m && !T_OPAQUE[nm];
-            if (!visible) continue;
-            // AO from the 8 cells around the face in the outward layer
-            let a0, a1, a2, a3;
-            {
-              const bx = q[0], by = q[1], bz = q[2];
-              const s_u0 = occ(bx - eu[0], by - eu[1], bz - eu[2]);
-              const s_u1 = occ(bx + eu[0], by + eu[1], bz + eu[2]);
-              const s_v0 = occ(bx - ev[0], by - ev[1], bz - ev[2]);
-              const s_v1 = occ(bx + ev[0], by + ev[1], bz + ev[2]);
-              const c00 = occ(bx - eu[0] - ev[0], by - eu[1] - ev[1], bz - eu[2] - ev[2]);
-              const c10 = occ(bx + eu[0] - ev[0], by + eu[1] - ev[1], bz + eu[2] - ev[2]);
-              const c11 = occ(bx + eu[0] + ev[0], by + eu[1] + ev[1], bz + eu[2] + ev[2]);
-              const c01 = occ(bx - eu[0] + ev[0], by - eu[1] + ev[1], bz - eu[2] + ev[2]);
-              a0 = vao(s_u0, s_v0, c00);
-              a1 = vao(s_u1, s_v0, c10);
-              a2 = vao(s_u1, s_v1, c11);
-              a3 = vao(s_u0, s_v1, c01);
-            }
-            // opaque: heat glow level. translucent liquids: water depth below (for tinting)
-            let glow = 0;
-            if (isO) glow = glowLevel(m, temp[wx + wz * SX + wy * LAYER]);
-            else if (T_STATE[m] === 3) {
-              let j = wx + wz * SX + wy * LAYER;
-              for (let k = 0; k < 7 && j >= LAYER && mat[j - LAYER] === m; k++) { glow++; j -= LAYER; }
-            }
-            let key = 1 + m + (glow << 5) + (a0 << 8) + (a1 << 10) + (a2 << 12) + (a3 << 14);
-            if (isT && T_STATE[m] === 3 && get(wx, wy + 1, wz) !== m) key += SURFACE;
-            if (isO) maskO[mi] = key;
-            else maskT[mi] = key;
-          }
-        }
-        greedy(maskO, opaqueB);
-        greedy(maskT, transB);
-
-        function greedy(mask: Int32Array, b: Builder) {
-          for (let j = 0; j < CS; j++) {
-            for (let i = 0; i < CS;) {
-              const key = mask[i + j * CS];
-              if (key === 0) { i++; continue; }
-              let w = 1;
-              while (i + w < CS && mask[i + w + j * CS] === key) w++;
-              let h = 1;
-              outer: while (j + h < CS) {
-                for (let k = 0; k < w; k++) if (mask[i + k + (j + h) * CS] !== key) break outer;
-                h++;
-              }
-              for (let hh = 0; hh < h; hh++) for (let k = 0; k < w; k++) mask[i + k + (j + hh) * CS] = 0;
-
-              const k0 = key - 1;
-              const m = k0 & 31;
-              const surface = (k0 & SURFACE) !== 0;
-              const glow = (k0 >> 5) & 7;
-              ao[0] = (k0 >> 8) & 3; ao[1] = (k0 >> 10) & 3; ao[2] = (k0 >> 12) & 3; ao[3] = (k0 >> 14) & 3;
-              // corners
-              const plane = side > 0 ? s + 1 : s;
-              du[0] = du[1] = du[2] = 0; dv[0] = dv[1] = dv[2] = 0;
-              du[u] = w; dv[v] = h;
-              const base = [0, 0, 0];
-              base[d] = plane; base[u] = i; base[v] = j;
-              // corner order (u0v0, u1v0, u1v1, u0v1) is CCW from +d
-              const c0 = base, c1 = [base[0] + du[0], base[1] + du[1], base[2] + du[2]];
-              const c2 = [c1[0] + dv[0], c1[1] + dv[1], c1[2] + dv[2]];
-              const c3 = [base[0] + dv[0], base[1] + dv[1], base[2] + dv[2]];
-              if (surface && !(d === 1 && side < 0)) {
-                // lower the liquid surface (top face, and the top edge of side faces)
-                const top = Math.max(c0[1], c1[1], c2[1], c3[1]);
-                for (const cc of [c0, c1, c2, c3]) if (cc[1] === top) cc[1] -= DROP;
-              }
-              if (side > 0) {
-                verts[0] = c0[0]; verts[1] = c0[1]; verts[2] = c0[2];
-                verts[3] = c1[0]; verts[4] = c1[1]; verts[5] = c1[2];
-                verts[6] = c2[0]; verts[7] = c2[1]; verts[8] = c2[2];
-                verts[9] = c3[0]; verts[10] = c3[1]; verts[11] = c3[2];
-                b.quad(verts, nrm, m, ao, glow, face);
-              } else {
-                // reverse winding: c0, c3, c2, c1
-                verts[0] = c0[0]; verts[1] = c0[1]; verts[2] = c0[2];
-                verts[3] = c3[0]; verts[4] = c3[1]; verts[5] = c3[2];
-                verts[6] = c2[0]; verts[7] = c2[1]; verts[8] = c2[2];
-                verts[9] = c1[0]; verts[10] = c1[1]; verts[11] = c1[2];
-                const aoR = [ao[0], ao[3], ao[2], ao[1]];
-                b.quad(verts, nrm, m, aoR, glow, face);
-              }
-              i += w;
-            }
-          }
-        }
-      }
+  // ── liquid field
+  for (let z = -1; z <= CS + 1; z++) for (let y = -1; y <= CS + 1; y++) for (let x = -1; x <= CS + 1; x++) {
+    const wx = ox + x, wy = oy + y, wz = oz + z;
+    const s = S(x, y, z);
+    if (wx < 0 || wy < 0 || wz < 0 || wx >= SX || wy >= SY || wz >= SZ) { dens[s] = 0; continue; }
+    const i = wx + wz * SX + wy * LAYER;
+    const m = mat[i];
+    if (T_STATE[m] === State.LIQUID) { dens[s] = Math.min(1, mass[i]); continue; }
+    // solids next to liquid borrow its level, so the liquid surface ends inside the wall
+    if (IS_TERRAIN[m] && fill[i] > 60) {
+      let best = 0, bm = 0;
+      const probe = (j: number) => { const mm = mat[j]; if (T_STATE[mm] === State.LIQUID && mass[j] > best) { best = mass[j]; bm = mm; } };
+      if (wx > 0) probe(i - 1);
+      if (wx < SX - 1) probe(i + 1);
+      if (wz > 0) probe(i - SX);
+      if (wz < SZ - 1) probe(i + SX);
+      if (wy < SY - 1) { const j = i + LAYER; if (T_STATE[mat[j]] === State.LIQUID && mass[j] > 0.15) { best = 1; bm = mat[j]; } }
+      dens[s] = Math.min(0.999, best);
+      if (bm) smat[s] = bm;
+      continue;
     }
+    dens[s] = 0;
   }
+  soupL.reset();
+  const liquid = surfaceNets(false) ? packLiquid() : null;
 
-  // falling liquid: thin streaks stretched over the gap below, so a waterfall reads as a stream
-  for (let k = 0; k < fallList.length; k += 4) {
-    const x = fallList[k], y = fallList[k + 1], z = fallList[k + 2], m = fallList[k + 3];
-    let ext = 0;
-    for (let j = 1; j <= 4; j++) {
-      const wy = oy + y - j;
-      if (wy < 0 || !T_MOVABLE[mat[ox + x + (oz + z) * SX + wy * LAYER]]) break;
-      ext = j;
-    }
-    const aboveSame = get(ox + x, oy + y + 1, oz + z) === m;
-    const inset = 0.16;
-    box(transB, [x + inset, y - ext, z + inset], [x + 1 - inset, y + 1, z + 1 - inset], m, aboveSame);
-  }
-
-  // material copy + glow stats
+  // ── material copy for the main-thread mirror + lava stats
   const mats = new Uint8Array(CS * CS * CS);
+  const fills = new Uint8Array(CS * CS * CS);
   let lava = 0, lx = 0, ly = 0, lz = 0;
-  for (let y = 0; y < CS; y++) {
-    for (let z = 0; z < CS; z++) {
-      const row = ox + (oz + z) * SX + (oy + y) * LAYER;
-      for (let x = 0; x < CS; x++) {
-        const m = mat[row + x];
-        mats[x + z * CS + y * CS * CS] = m;
-        if (m === M.LAVA) {
-          lava++;
-          lx += x; ly += y; lz += z;
-        }
-      }
+  for (let y = 0; y < CS; y++) for (let z = 0; z < CS; z++) {
+    const row = ox + (oz + z) * SX + (oy + y) * LAYER;
+    for (let x = 0; x < CS; x++) {
+      const i = row + x;
+      const m = mat[i];
+      const k = x + z * CS + y * CS * CS;
+      mats[k] = m;
+      fills[k] = T_STATE[m] === State.LIQUID ? Math.min(255, Math.round(mass[i] * 255)) : fill[i];
+      if (m === M.LAVA) { lava++; lx += x; ly += y; lz += z; }
     }
   }
   return {
-    c,
-    opaque: opaqueB.build(),
-    trans: transB.build(),
-    mats,
-    lava,
-    lavaPos: lava ? [ox + lx / lava + 0.5, oy + ly / lava + 1.5, oz + lz / lava + 0.5] : [0, 0, 0],
+    c, hasTerrain: doTerrain, terrain, liquid, collider, mats, fills, lava,
+    lavaPos: lava ? [ox + lx / lava + 0.5, oy + ly / lava + 1.2, oz + lz / lava + 0.5] : [0, 0, 0],
   };
+
+  // ───────────────────────── inner helpers ─────────────────────────
+
+  function surfaceNets(isTerrain: boolean): boolean {
+    const ISO = 0.5;
+    vidx.fill(-1);
+    let nv = 0;
+    // 1. one vertex per dual cube with a sign change (cube min corner -1 .. CS-1)
+    for (let z = -1; z < CS; z++) for (let y = -1; y < CS; y++) for (let x = -1; x < CS; x++) {
+      const base = S(x, y, z);
+      let inside = 0;
+      for (let k = 0; k < 8; k++) { cs[k] = dens[base + COFF[k]]; if (cs[k] >= ISO) inside++; }
+      if (inside === 0 || inside === 8) continue;
+      let px = 0, py = 0, pz = 0, cnt = 0;
+      for (let e = 0; e < 12; e++) {
+        const a = EDGE_A[e], b = EDGE_B[e];
+        const da = cs[a], db = cs[b];
+        if ((da >= ISO) === (db >= ISO)) continue;
+        const t = (ISO - da) / (db - da);
+        px += CORNER[a * 3] + (CORNER[b * 3] - CORNER[a * 3]) * t;
+        py += CORNER[a * 3 + 1] + (CORNER[b * 3 + 1] - CORNER[a * 3 + 1]) * t;
+        pz += CORNER[a * 3 + 2] + (CORNER[b * 3 + 2] - CORNER[a * 3 + 2]) * t;
+        cnt++;
+      }
+      px /= cnt; py /= cnt; pz /= cnt;
+      const wx = ox + x, wy = oy + y, wz = oz + z;
+      // samples sit at cell centres: cube corner (0,0,0) is the centre of cell (x,y,z)
+      let fx = x + 0.5 + px, fy = y + 0.5 + py, fz = z + 0.5 + pz;
+      if (isTerrain) {
+        // hand-made look: a little jitter seeded by the world position of the cube
+        fx += (hash3(wx, wy, wz) - 0.5) * 0.3;
+        fy += (hash3(wx + 71, wy, wz + 13) - 0.5) * 0.18;
+        fz += (hash3(wx, wy + 37, wz - 29) - 0.5) * 0.3;
+      } else {
+        fx += (hash3(wx, wy, wz) - 0.5) * 0.3;
+        fz += (hash3(wx + 5, wy, wz + 3) - 0.5) * 0.3;
+      }
+      const v = nv++;
+      vidx[base] = v;
+      vx[v * 3] = fx; vx[v * 3 + 1] = fy; vx[v * 3 + 2] = fz;
+
+      if (isTerrain) {
+        let r = 0, g = 0, bb = 0, r0 = 0, g0 = 0, b0 = 0, wsum = 0, tmax = 0, hot = 0, best = 0, bm = 0;
+        for (let k = 0; k < 8; k++) {
+          const s = base + COFF[k];
+          const d = dens[s];
+          if (d <= 0) continue;
+          const m = smat[s];
+          const w = d * d;
+          const i = (ox + x + CORNER[k * 3]) + (oz + z + CORNER[k * 3 + 2]) * SX + (oy + y + CORNER[k * 3 + 1]) * LAYER;
+          r += PAL_R[m * 3 + 1] * w; g += PAL_G[m * 3 + 1] * w; bb += PAL_B[m * 3 + 1] * w;
+          const pm = IS_TERRAIN[prevMat[i]] ? prevMat[i] : m;
+          r0 += PAL_R[pm * 3 + 1] * w; g0 += PAL_G[pm * 3 + 1] * w; b0 += PAL_B[pm * 3 + 1] * w;
+          wsum += w;
+          if (changeT[i] > tmax) tmax = changeT[i];
+          if (temp[i] > hot) hot = temp[i];
+          if (w > best) { best = w; bm = m; }
+        }
+        if (wsum === 0) wsum = 1;
+        vcol[v * 3] = r / wsum; vcol[v * 3 + 1] = g / wsum; vcol[v * 3 + 2] = bb / wsum;
+        vcol0[v * 3] = r0 / wsum; vcol0[v * 3 + 1] = g0 / wsum; vcol0[v * 3 + 2] = b0 / wsum;
+        vt[v] = tmax;
+        vglow[v] = glowLevel(bm, hot);
+        vmat[v] = bm;
+        // soft AO: how buried the vertex is in a 4x4x4 neighbourhood
+        let occ = 0;
+        for (let dz = -1; dz <= 2; dz++) for (let dy = -1; dy <= 2; dy++) for (let dx = -1; dx <= 2; dx++) {
+          const sx = x + dx, sy = y + dy, sz = z + dz;
+          if (sx < -1 || sy < -1 || sz < -1 || sx > CS + 1 || sy > CS + 1 || sz > CS + 1) { occ += 0.4; continue; }
+          occ += dens[S(sx, sy, sz)];
+        }
+        occ /= 64;
+        vao[v] = Math.max(0.6, Math.min(1.06, 1.08 - (occ - 0.42) * 1.35));
+      } else {
+        let bm = 0, best = 0, nearSolid = 0;
+        for (let k = 0; k < 8; k++) {
+          const s = base + COFF[k];
+          const m = smat[s];
+          if (T_STATE[m] === State.LIQUID && dens[s] > best) { best = dens[s]; bm = m; }
+          if (IS_TERRAIN[m]) nearSolid++;
+        }
+        if (!bm) bm = M.WATER;
+        vmat[v] = bm;
+        const cx2 = Math.max(0, Math.min(SX - 1, ox + Math.floor(fx))), cz2 = Math.max(0, Math.min(SZ - 1, oz + Math.floor(fz)));
+        const cy2 = Math.max(0, Math.min(SY - 1, oy + Math.floor(fy)));
+        let depth = 0;
+        for (let yy = cy2; yy >= 0 && depth < 12; yy--) {
+          if (T_STATE[mat[cx2 + cz2 * SX + yy * LAYER]] !== State.LIQUID) { if (yy < cy2) break; else continue; }
+          depth++;
+        }
+        vdepth[v] = Math.min(255, depth * 26);
+        const fi = cx2 + cz2 * SX + cy2 * LAYER;
+        vfoam[v] = Math.max(nearSolid >= 3 ? 110 : nearSolid > 0 ? 45 : 0, foam[fi]);
+        vglow[v] = bm === M.LAVA ? Math.max(0, Math.min(255, (temp[fi] - 650) * 0.45)) : 0;
+      }
+    }
+
+    // 2. a quad for every sample edge with a sign change (edge base sample 0..CS-1)
+    let tris = 0;
+    for (let z = 0; z < CS; z++) for (let y = 0; y < CS; y++) for (let x = 0; x < CS; x++) {
+      const s = S(x, y, z);
+      const d0 = dens[s] >= ISO;
+      for (let axis = 0; axis < 3; axis++) {
+        const step = axis === 0 ? 1 : axis === 1 ? N : N * N;
+        const d1 = dens[s + step] >= ISO;
+        if (d0 === d1) continue;
+        const u = axis === 0 ? N : axis === 1 ? N * N : 1;
+        const w = axis === 0 ? N * N : axis === 1 ? 1 : N;
+        const a = vidx[s], b = vidx[s - u], cc = vidx[s - u - w], d = vidx[s - w];
+        if (a < 0 || b < 0 || cc < 0 || d < 0) continue;
+        if (d0) { emitTri(a, b, cc, isTerrain); emitTri(a, cc, d, isTerrain); }
+        else { emitTri(a, cc, b, isTerrain); emitTri(a, d, cc, isTerrain); }
+        tris += 2;
+      }
+    }
+    return tris > 0;
+  }
+
+  function emitTri(a: number, b: number, c2: number, isTerrain: boolean) {
+    const soup = isTerrain ? soupT : soupL;
+    const ax = vx[a * 3], ay = vx[a * 3 + 1], az = vx[a * 3 + 2];
+    const bx = vx[b * 3], by = vx[b * 3 + 1], bz = vx[b * 3 + 2];
+    const cx = vx[c2 * 3], cy = vx[c2 * 3 + 1], cz = vx[c2 * 3 + 2];
+    let nx = (by - ay) * (cz - az) - (bz - az) * (cy - ay);
+    let ny = (bz - az) * (cx - ax) - (bx - ax) * (cz - az);
+    let nz = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+    const len = Math.hypot(nx, ny, nz) || 1;
+    nx /= len; ny /= len; nz /= len;
+    const n8x = Math.round(nx * 127), n8y = Math.round(ny * 127), n8z = Math.round(nz * 127);
+    soup.pos.push(ax, ay, az, bx, by, bz, cx, cy, cz);
+    soup.nrm.push(n8x, n8y, n8z, n8x, n8y, n8z, n8x, n8y, n8z);
+    if (!isTerrain) {
+      soup.a.push(vmat[a], vdepth[a], vfoam[a], vglow[a], vmat[a], vdepth[b], vfoam[b], vglow[b], vmat[a], vdepth[c2], vfoam[c2], vglow[c2]);
+      return;
+    }
+    // one colour per face: blend of the three vertex colours + hashed shade + AO + slope rules
+    const h = hash3(Math.floor((ox + (ax + bx + cx) / 3) * 3), Math.floor((oy + (ay + by + cy) / 3) * 3), Math.floor((oz + (az + bz + cz) / 3) * 3));
+    const shade = 0.94 + h * 0.12;
+    const ao = (vao[a] + vao[b] + vao[c2]) / 3;
+    const dom = vmat[a] === vmat[b] || vmat[a] === vmat[c2] ? vmat[a] : vmat[b];
+    let r = (vcol[a * 3] + vcol[b * 3] + vcol[c2 * 3]) / 3;
+    let g = (vcol[a * 3 + 1] + vcol[b * 3 + 1] + vcol[c2 * 3 + 1]) / 3;
+    let bl = (vcol[a * 3 + 2] + vcol[b * 3 + 2] + vcol[c2 * 3 + 2]) / 3;
+    let r0 = (vcol0[a * 3] + vcol0[b * 3] + vcol0[c2 * 3]) / 3;
+    let g0 = (vcol0[a * 3 + 1] + vcol0[b * 3 + 1] + vcol0[c2 * 3 + 1]) / 3;
+    let b0 = (vcol0[a * 3 + 2] + vcol0[b * 3 + 2] + vcol0[c2 * 3 + 2]) / 3;
+    const k = h < 0.34 ? 0 : h < 0.7 ? 1 : 2;
+    // slope-aware styling: steep grass shows earthy cliffs, steep snow shows rock
+    // only genuinely steep faces turn to earth / rock (jitter alone shouldn't speckle the grass)
+    const steep = 1 - Math.max(0, Math.min(1, (ny - 0.28) / 0.25));
+    if (dom === M.GRASS && steep > 0) {
+      r += (hexR(CLIFF[k]) - r) * steep; g += (hexG(CLIFF[k]) - g) * steep; bl += (hexB(CLIFF[k]) - bl) * steep;
+    } else if (dom === M.SNOW && steep > 0.3) {
+      const t = (steep - 0.3) / 0.7;
+      r += (hexR(ROCKFACE[k]) - r) * t; g += (hexG(ROCKFACE[k]) - g) * t; bl += (hexB(ROCKFACE[k]) - bl) * t;
+    } else {
+      r += (PAL_R[dom * 3 + k] - PAL_R[dom * 3 + 1]) * 0.8;
+      g += (PAL_G[dom * 3 + k] - PAL_G[dom * 3 + 1]) * 0.8;
+      bl += (PAL_B[dom * 3 + k] - PAL_B[dom * 3 + 1]) * 0.8;
+    }
+    const f = shade * ao * (ny < -0.3 ? 0.88 : 1);
+    const R = clamp8(r * f), G = clamp8(g * f), B = clamp8(bl * f);
+    const R0 = clamp8(r0 * f), G0 = clamp8(g0 * f), B0 = clamp8(b0 * f);
+    const t = Math.max(vt[a], vt[b], vt[c2]);
+    const glow = Math.max(vglow[a], vglow[b], vglow[c2]);
+    for (let q = 0; q < 3; q++) {
+      soup.a.push(R, G, B);
+      soup.b.push(R0, G0, B0);
+      soup.t.push(t, glow, dom);
+    }
+  }
+
+  function packTerrain(): TerrainBuffers {
+    const n = soupT.pos.length / 3;
+    const aux = new Uint8Array(n * 4);
+    const tchg = new Float32Array(n);
+    for (let k = 0; k < n; k++) {
+      tchg[k] = soupT.t[k * 3];
+      aux[k * 4] = soupT.t[k * 3 + 1];
+      aux[k * 4 + 1] = soupT.t[k * 3 + 2];
+    }
+    return {
+      pos: Float32Array.from(soupT.pos),
+      nrm: Int8Array.from(soupT.nrm),
+      col: Uint8Array.from(soupT.a),
+      col0: Uint8Array.from(soupT.b),
+      tchg,
+      aux,
+    };
+  }
+
+  function packLiquid(): LiquidBuffers {
+    return { pos: Float32Array.from(soupL.pos), nrm: Int8Array.from(soupL.nrm), aux: Uint8Array.from(soupL.a) };
+  }
 }
 
-function vao(s1: number, s2: number, c: number): number {
-  if (s1 && s2) return 0;
-  return 3 - (s1 + s2 + c);
+function clamp8(v: number) {
+  return v < 0 ? 0 : v > 255 ? 255 : Math.round(v);
+}
+
+function colliderFrom(pos: Float32Array, ox: number, oy: number, oz: number): Float32Array {
+  const out = new Float32Array(pos.length);
+  for (let k = 0; k < pos.length; k += 3) {
+    out[k] = pos[k] + ox; out[k + 1] = pos[k + 1] + oy; out[k + 2] = pos[k + 2] + oz;
+  }
+  return out;
 }

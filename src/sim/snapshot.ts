@@ -4,7 +4,7 @@
 import { VOLUME } from './constants.ts';
 import { F_SETTLED, type World } from './world.ts';
 
-const MAGIC = 0x31525254; // "TRR1"
+const MAGIC = 0x32525254; // "TRR2"
 
 class ByteWriter {
   buf = new Uint8Array(1 << 16);
@@ -82,30 +82,45 @@ function unrle(rd: ByteReader, put: (i: number, v: number) => void) {
   }
 }
 
-export function encodeWorld(w: World): Uint8Array {
+export function encodeWorld(w: World, extra = ''): Uint8Array {
   const wr = new ByteWriter();
   wr.u32(MAGIC);
   wr.u32(w.seed >>> 0);
-  const { mat, temp, life, flags } = w;
+  const { mat, temp, life, flags, fill, mass } = w;
   rle(wr, (i) => mat[i]);
+  rle(wr, (i) => fill[i]);
+  rle(wr, (i) => Math.min(4000, Math.round(mass[i] * 1000)));
   rle(wr, (i) => Math.max(0, Math.min(65535, Math.round(temp[i]) + 32768)));
   rle(wr, (i) => life[i] | ((flags[i] & ~F_SETTLED) << 8));
+  const bytes = new TextEncoder().encode(extra);
+  wr.u32(bytes.length);
+  for (const b of bytes) wr.varint(b);
   return wr.bytes();
 }
 
-export function decodeWorld(w: World, data: Uint8Array): boolean {
+/** Returns the extra string (trees etc.) or null if the data isn't a valid save. */
+export function decodeWorld(w: World, data: Uint8Array): string | null {
   const rd = new ByteReader(data);
-  if (rd.u32() !== MAGIC) return false;
+  if (rd.u32() !== MAGIC) return null;
   w.seed = rd.u32();
-  const { mat, temp, life, flags } = w;
+  const { mat, temp, life, flags, fill, mass } = w;
   unrle(rd, (i, v) => { mat[i] = v; });
+  unrle(rd, (i, v) => { fill[i] = v; });
+  unrle(rd, (i, v) => { mass[i] = v / 1000; });
   unrle(rd, (i, v) => { temp[i] = v - 32768; });
   unrle(rd, (i, v) => { life[i] = v & 255; flags[i] = v >> 8; });
-  w.stamp.fill(0);
+  const n = rd.u32();
+  const bytes = new Uint8Array(n);
+  for (let k = 0; k < n; k++) bytes[k] = rd.varint();
+  w.fluxX.fill(0);
+  w.fluxZ.fill(0);
+  w.foam.fill(0);
+  w.prevMat.set(w.mat);
+  w.changeT.fill(-10);
   w.removedStruct.length = 0;
   w.newSolids.length = 0;
   w.explosions.length = 0;
   w.hot.fill(1);
   w.markAllDirty();
-  return true;
+  return new TextDecoder().decode(bytes);
 }

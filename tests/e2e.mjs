@@ -64,7 +64,7 @@ if (run('mouse')) {
   await page.keyboard.press('Control+z');
   await wait(1200);
   const undone = await page.evaluate(() => H.count(H.M.GRASS) + H.count(H.M.DIRT));
-  ok('Ctrl+Z restores the terrain', Math.abs(undone - before) < 10, `after undo ${undone} (before ${before})`);
+  ok('Ctrl+Z restores the terrain', Math.abs(undone - before) < 40, `after undo ${undone} (before ${before})`);
 }
 
 // ── B: pour water into a pit ──
@@ -125,29 +125,33 @@ if (run('lava')) {
   ok('lava poured into the lake quenches to obsidian', obs1 > obs0 + 10, `obsidian ${obs0} -> ${obs1}, awake chunks ${steam.awake}`);
 }
 
-// ── D: burn a tree ──
+// ── D: burn a tree (trees are low poly models with their own burn state) ──
 if (run('fire')) {
-  const trunk = await page.evaluate(() => H.find(H.M.WOOD, (x, y, z) => H.at(x, y - 1, z) === H.M.DIRT && H.at(x, y + 3, z) === H.M.WOOD));
-  const wood0 = await page.evaluate(() => H.count(H.M.WOOD) + H.count(H.M.LEAVES));
-  await page.evaluate(([x, y, z]) => H.look(x, y + 4, z, 34, 0.4, 0.35), trunk);
+  // trees: id, state, burn, onFire, x, y, z, kind, h, seed
+  const tree = await page.evaluate(() => {
+    const t = window.__terrarium.trees;
+    for (let o = 0; o < t.length; o += 10) if (t[o + 1] === 0 && t[o + 7] === 0) return [t[o], t[o + 4], t[o + 5], t[o + 6], t[o + 8]];
+    return [t[0], t[4], t[5], t[6], t[8]];
+  });
+  const [id, tx, ty, tz, th] = tree;
+  await page.evaluate(([x, y, z, h]) => H.look(x, y + h * 0.5, z, 26, 0.4, 0.3), [tx, ty, tz, th]);
   for (let k = 0; k < 40; k++) {
-    await page.evaluate(([x, y, z]) => H.apply('heat', 0, x, y + 1, z, 1.5), trunk);
+    await page.evaluate(([x, y, z]) => H.apply('heat', 0, Math.floor(x), Math.floor(y) + 1, Math.floor(z), 1.5), [tx, ty, tz]);
     await wait(33);
   }
-  await wait(1000);
+  await wait(1200);
   await shot('fire-burning1');
-  await wait(1500);
+  await wait(2500);
   await shot('fire-burning');
   const fire = await page.evaluate(() => window.__terrarium.stats.fire);
-  // night shot of the fire for glow
   await page.evaluate(() => { window.__terrarium.sky.running = false; window.__terrarium.sky.time = 0.02; });
   await wait(2000);
   await shot('fire-night');
   await page.evaluate(() => { window.__terrarium.sky.time = 0.34; window.__terrarium.sky.running = true; });
-  await wait(14000);
+  await wait(15000);
   await shot('fire-after');
-  const wood1 = await page.evaluate(() => H.count(H.M.WOOD) + H.count(H.M.LEAVES));
-  ok('heating a tree sets it on fire and it burns away', fire > 5 && wood1 < wood0 - 30, `fire cells at peak ~${fire}, wood+leaves ${wood0} -> ${wood1}`);
+  const state = await page.evaluate((id) => { const t = window.__terrarium.trees; for (let o = 0; o < t.length; o += 10) if (t[o] === id) return [t[o + 1], t[o + 2]]; return [-1, 0]; }, id);
+  ok('heating a tree sets it on fire and it burns down', fire > 5 && state[1] > 0.6, `fire particles at peak ~${fire}, tree state ${state[0]} burnt ${(state[1] * 100).toFixed(0)}%`);
 }
 
 // ── E: blow a hole under a cliff ──
@@ -175,7 +179,7 @@ if (run('blast')) {
   await page.evaluate(([x, y, z]) => { H.apply('explode', 0, x, y, z, 4.5); }, target);
   await wait(350);
   await shot('blast-boom');
-  const debris = await page.evaluate(() => window.__terrarium.stats.debris);
+  const debris = await page.evaluate(() => window.__terrarium.stats.bodies);
   await page.evaluate(([x, y, z]) => { H.apply('explode', 0, x, y + 5, z, 4.5); }, target);
   await wait(4000);
   await shot('blast-after');

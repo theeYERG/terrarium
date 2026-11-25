@@ -1,77 +1,72 @@
-# Terrarium – Architecture Plan
+# Terrarium – Plan (v2: low poly + smooth motion)
 
-## Overview
+v1 (blocky voxels, cell-by-cell CA) is described in git history (`git show c5ae228:PLAN.md`).
+v2 keeps the voxel grid as the *data* but changes how it is drawn and how things move.
+
+## Architecture
 
 ```
- main thread                                   sim worker (src/sim/worker.ts)
- ─────────────────────────────                 ─────────────────────────────────────
- main.ts      boot, loading screen             World: typed arrays (mat, temp, life, flags)
- render/      Three.js scene, chunks,   <───   tick(): cellular automaton over awake chunks
-              sky, water, post-fx,             mesher: greedy mesh + per-vertex AO for
-              particles, debris                        dirty chunks -> transferable buffers
- ui/          toolbar, palette, HUD            debris: flying voxels (explosions, collapse)
- input.ts     raycast (DDA on mirror grid),    structure: connectivity check after removal
-              brush, strokes            ───>   tools: add/erase/dig/heat/cool/explode/pour
- audio/       WebAudio synth (no assets)       undo snapshots (RLE), save/load encode
+ sim worker (one thread)                                    main thread
+ ───────────────────────────────────────────────────        ──────────────────────────────────
+ grid: mat, fill(0..1), temp, mass(liquid), flux x/z,        terrain chunks: flat-shaded surface-nets
+       prevMat + changeTime (colour transitions), foam              meshes, vertex colours, colour lerp
+ terrain   : heat, phase changes, burning, powder slump      liquid chunks: one smooth surface per chunk,
+ liquids   : mass-based "virtual pipe" flow per layer               waves, depth colour, fresnel, foam
+             (levels out, waves, viscosity per liquid)       instanced: grains, rocks, droplets, puffs
+ particles : falling liquid (gravity + cohesion + XSPH),     rigid chunk meshes + tree models
+             merge back into cells on landing                 interpolation: bodies lerp/slerp between the
+ gas       : fire / smoke / steam particles (buoyancy,              last two ticks; particles extrapolate by v
+             swirl, fade, heat + ignite, condense)           sky / lights / post / UI / audio (kept)
+ physics   : Rapier – terrain trimesh colliders per chunk,
+             grains, explosion rocks, tumbling chunks, trees;
+             settled bodies shrink while their fill is
+             deposited back into the grid
+ mesher    : surface nets on fill (terrain) and on liquid
+             mass (liquids); only dirty chunks; jittered,
+             non-indexed, per-face colours + AO
 ```
 
-* Grid **128 × 64 × 128** (x, y, z), index `x + z*128 + y*128*128` (y-major so a
-  horizontal layer is contiguous). Chunks are **16³** → 8 × 4 × 8 = 256 chunks.
-* Per-cell arrays: `mat:Uint8`, `temp:Float32` (°C), `life:Uint8` (fire/gas lifetime),
-  `flags:Uint8` (source bit, moved-this-tick parity bit).
-* Main thread keeps a **mirror of `mat`** (the worker ships each remeshed chunk's
-  materials) so raycasting is an exact voxel DDA with no worker round trip.
-* Only **awake chunks** are simulated. A chunk wakes when anything in or next to it
-  changes, and stays awake while it holds moving cells or temperatures away from ambient.
-* Greedy meshing per chunk, two meshes per chunk: opaque and translucent (water, oil,
-  acid, ice, glass). Per-voxel colour variation is done in the shader from the world
-  cell position, so greedy merging still works. AO is per vertex (merge only equal AO).
-* Gases (fire, smoke, steam) are drawn as soft point sprites, not cubes.
-* Flying debris is an `InstancedMesh`; the worker simulates it and sends positions +
-  velocities each tick, the main thread extrapolates between ticks.
+* Tick: fixed 30 Hz. Everything visible is interpolated or extrapolated per render frame.
+* A cell is "solid" for physics when `fill >= 0.5`. Brush edits change `fill` with a soft falloff
+  over several ticks, so surfaces grow and recede instead of popping.
+* Material changes record `prevMat` + `changeTime`; the terrain shader lerps the colour over
+  ~0.4 s and the worker emits a puff of particles.
 
-## Checklist
+## Phases / checklist
 
-### Phase 1 – voxel data + meshing
-- [x] material table (density, state, temperatures, flammability, conductivity, colours)
-- [x] seeded noise + island generator (layers, lake, waterfall + spring, trees, cave, lava pocket, snowy peak, metal veins)
-- [x] greedy chunk mesher with per-vertex AO, opaque/translucent split
+### 1. Smooth terrain mesh
+- [ ] `fill` field in the world, generator writes smooth fractional surfaces
+- [ ] surface nets mesher (per chunk, dirty-only, in the worker), non-indexed flat triangles
+- [ ] position-seeded vertex jitter, per-face colours, material blending at boundaries, AO
+- [ ] soft-falloff brush for add / dig / erase / explode; raycast uses fill
 
-### Phase 2 – camera + rendering
-- [x] chunk meshes with custom shader (palette, variation, AO, glow)
-- [x] orbit camera: right-drag orbit, middle-drag pan, scroll zoom, damping, limits, anti-clip
-- [x] sun shadows (PCF soft), hemisphere ambient, fog
+### 2. Low poly styling
+- [ ] cohesive palette (2–3 shades per material), slope-aware grass/dirt/rock colouring
+- [ ] trees (cone pines, icosphere oaks), chunky rocks, grass tufts / flowers as instanced models
+- [ ] pastel sky, warm soft light, fog
 
-### Phase 3 – simulation core
-- [x] worker loop with fixed tick rate + speed control + pause
-- [x] awake-chunk scheduling, randomized order, moved-parity flags
-- [x] powders with angle of repose, liquids with dispersion + density sinking, gases rise/fade
-- [x] heat conduction, ambient relaxation, phase changes
+### 3. Liquid heightfield
+- [ ] per-cell liquid mass + face fluxes (virtual pipes) with per-liquid viscosity
+- [ ] density sorting (oil floats), lava crust → obsidian, lava + water → steam + obsidian, acid
+- [ ] liquid surface mesh: waves, depth colour, fresnel, foam at shores and impacts, faceting
 
-### Phase 4 – materials + reactions
-- [x] fire (fuel, spread, smoke, embers, burn-out), gunpowder chain explosions
-- [x] lava + water → obsidian + steam, acid dissolves, grass spread, mud, steam condensing
-- [x] structural support → collapsing debris
+### 4. Liquid particles
+- [ ] water leaving a ledge turns into particles; cohesion + XSPH; landing merges into cells
+- [ ] waterfall stream look, splashes + spray, foam where they land
 
-### Phase 5 – tools
-- [x] add, erase, dig, heat, cool, explode, pour/rain, inspect
-- [x] brush preview sphere + face highlight, size with Shift/Ctrl+scroll and [ ]
-- [x] hold-to-paint with interpolation between positions
+### 5. Rigid debris (Rapier)
+- [ ] terrain trimesh colliders per chunk, rebuilt with remesh
+- [ ] powder grains: unsupported sand/gravel/snow → bodies → settle → merge (shrink + deposit)
+- [ ] explosion rocks with velocity; tumbling rigid chunks for unsupported terrain; falling trees
 
-### Phase 6 – visual effects
-- [x] bloom, emissive lava/fire, dynamic point lights near lava/fire clusters
-- [x] animated translucent water with shimmer, glass/ice transparency
-- [x] gradient sky, day/night, sun + moon, stars, fog
-- [x] particles: explosion sparks, splashes, smoke puffs, steam hiss, embers
-- [x] tilt-shift miniature effect (toggle)
+### 6. Particle effects
+- [ ] fire / smoke / steam as particles: buoyancy, swirl, eased fade; fire heats + ignites, steam condenses
 
-### Phase 7 – UI
-- [x] glassy toolbar with icons + tooltips, material palette, settings panel
-- [x] shortcuts, pause/speed, FPS counter, undo (20), clear, regenerate w/ seed, save/load, screenshot, cinematic
-- [x] title + loading screen, sound (WebAudio, muted until first click), touch support
+### 7. Interpolation & transitions
+- [ ] snapshot interpolation for bodies, extrapolation for particles, eased camera
+- [ ] colour lerp on material change, puffs on state changes, shrink on merge
 
-### Phase 8 – polish
-- [x] Playwright scenario tests + screenshots
-- [x] profiling (sim tick, remesh, frame time) and optimisation
-- [x] picky designer review – 10 fixes
-- [x] GitHub repo, Pages workflow, README
+### 8. Polish
+- [ ] profile (sim tick, remesh, physics, render) → steady 60 fps; scale counts down if needed
+- [ ] art-director review: 10 fixes
+- [ ] tests updated, README + screenshots, deploy

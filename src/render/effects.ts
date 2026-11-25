@@ -1,149 +1,31 @@
-// Visual-only effects: gas sprites (fire, smoke, steam), CPU particles (sparks, splashes,
-// puffs, embers), instanced flying debris, and a pool of point lights for lava/fire glow.
+// Visual-only effects: CPU particles (sparks, splashes, spray, embers, dust, transition
+// puffs) and a pool of point lights for lava/fire glow.
 
 import * as THREE from 'three';
 import { M, MATERIALS, MAT_COUNT } from '../sim/materials.ts';
+import { PUFF_FRAG, PUFF_VERT } from './dynamics.ts';
 
 const linColors: THREE.Color[] = [];
 for (let m = 0; m < MAT_COUNT; m++) linColors.push(new THREE.Color(MATERIALS[m].color));
 
-// ───────────────────────────── gas sprites ─────────────────────────────
-
-const GAS_VERT = /* glsl */ `
-attribute float aCode;
-uniform float uScale;
-uniform float uTime;
-uniform float uFire;
-varying float vLife;
-varying float vKind;
-varying float vSeed;
-float h(vec3 p) { p = fract(p * 0.1031); p += dot(p, p.zyx + 31.32); return fract((p.x + p.y) * p.z); }
-void main() {
-  vKind = floor(aCode);
-  vLife = fract(aCode);
-  vSeed = h(position);
-  vec3 p = position;
-  // gentle wobble so the 30 Hz grid motion reads as soft drifting
-  p.x += sin(uTime * 1.7 + vSeed * 30.0) * 0.35;
-  p.z += cos(uTime * 1.3 + vSeed * 20.0) * 0.35;
-  p.y += sin(uTime * 2.1 + vSeed * 12.0) * 0.2;
-  vec4 mv = modelViewMatrix * vec4(p, 1.0);
-  float size;
-  if (vKind < 0.5) size = (0.9 + vLife * 0.9) * (0.8 + 0.4 * sin(uTime * 18.0 + vSeed * 50.0));
-  else if (vKind < 1.5) size = 2.4 + (1.0 - vLife) * 2.6;
-  else size = 2.2 + (1.0 - vLife) * 2.4;
-  gl_PointSize = size * uScale / -mv.z;
-  gl_Position = projectionMatrix * mv;
-}`;
-
-const GAS_FRAG = /* glsl */ `
-uniform float uFire;
-uniform float uNight;
-varying float vLife;
-varying float vKind;
-varying float vSeed;
-void main() {
-  vec2 c = gl_PointCoord - 0.5;
-  float d = length(c);
-  if (d > 0.5) discard;
-  float soft = smoothstep(0.5, 0.0, d);
-  if (vKind < 0.5) {
-    vec3 col = mix(vec3(1.0, 0.12, 0.01), vec3(1.0, 0.55, 0.1), vLife);
-    col = mix(col, vec3(1.0, 0.8, 0.35), smoothstep(0.8, 1.0, vLife) * 0.5);
-    gl_FragColor = vec4(col * (1.3 + vLife * 1.6), soft * soft * (0.22 + vLife * 0.38));
-  } else if (vKind < 1.5) {
-    vec3 col = mix(vec3(0.18, 0.18, 0.2), vec3(0.32, 0.32, 0.34), vSeed) * (1.0 - uNight * 0.6);
-    gl_FragColor = vec4(col, soft * 0.42 * min(1.0, vLife * 2.5));
-  } else {
-    vec3 col = vec3(0.92, 0.95, 1.0) * (1.0 - uNight * 0.65);
-    gl_FragColor = vec4(col, soft * 0.3 * min(1.0, vLife * 2.0));
-  }
-}`;
-
-export class GasRenderer {
-  fire: THREE.Points;
-  smoke: THREE.Points;
-  uniforms = { uScale: { value: 600 }, uTime: { value: 0 }, uNight: { value: 0 }, uFire: { value: 1 } };
-
-  constructor(scene: THREE.Scene) {
-    const mk = (additive: boolean) => {
-      const g = new THREE.BufferGeometry();
-      g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(3), 3));
-      g.setAttribute('aCode', new THREE.BufferAttribute(new Float32Array(1), 1));
-      const m = new THREE.ShaderMaterial({
-        uniforms: this.uniforms, vertexShader: GAS_VERT, fragmentShader: GAS_FRAG,
-        transparent: true, depthWrite: false,
-        blending: additive ? THREE.AdditiveBlending : THREE.NormalBlending,
-      });
-      const p = new THREE.Points(g, m);
-      p.frustumCulled = false;
-      p.renderOrder = additive ? 3 : 2;
-      scene.add(p);
-      return p;
-    };
-    this.smoke = mk(false);
-    this.fire = mk(true);
-  }
-
-  set(gas: Float32Array) {
-    const n = gas.length / 4;
-    let nf = 0;
-    for (let k = 0; k < n; k++) if (gas[k * 4 + 3] < 1) nf++;
-    const fp = new Float32Array(nf * 3), fc = new Float32Array(nf);
-    const sp = new Float32Array((n - nf) * 3), sc = new Float32Array(n - nf);
-    let a = 0, b = 0;
-    for (let k = 0; k < n; k++) {
-      const code = gas[k * 4 + 3];
-      if (code < 1) {
-        fp[a * 3] = gas[k * 4]; fp[a * 3 + 1] = gas[k * 4 + 1]; fp[a * 3 + 2] = gas[k * 4 + 2]; fc[a++] = code;
-      } else {
-        sp[b * 3] = gas[k * 4]; sp[b * 3 + 1] = gas[k * 4 + 1]; sp[b * 3 + 2] = gas[k * 4 + 2]; sc[b++] = code;
-      }
-    }
-    const put = (p: THREE.Points, pos: Float32Array, code: Float32Array) => {
-      const g = p.geometry;
-      g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-      g.setAttribute('aCode', new THREE.BufferAttribute(code, 1));
-      g.setDrawRange(0, code.length);
-    };
-    put(this.fire, fp, fc);
-    put(this.smoke, sp, sc);
-  }
-}
-
 // ───────────────────────────── particles ─────────────────────────────
 
-const PART_VERT = /* glsl */ `
-attribute vec4 aColor;
-attribute float aSize;
-uniform float uScale;
-varying vec4 vColor;
-void main() {
-  vColor = aColor;
-  vec4 mv = modelViewMatrix * vec4(position, 1.0);
-  gl_PointSize = aSize * uScale / -mv.z;
-  gl_Position = projectionMatrix * mv;
-}`;
-const PART_FRAG = /* glsl */ `
-varying vec4 vColor;
-void main() {
-  vec2 c = gl_PointCoord - 0.5;
-  float d = length(c);
-  if (d > 0.5) discard;
-  float soft = smoothstep(0.5, 0.05, d);
-  gl_FragColor = vec4(vColor.rgb, vColor.a * soft);
-}`;
-
+/**
+ * Short-lived visual particles drawn as faceted low poly shapes (octahedra for sparks,
+ * icosahedra for puffs) so they match the rest of the art style.
+ */
 class ParticlePool {
   max: number;
   n = 0;
   pos: Float32Array; vel: Float32Array; col: Float32Array; size: Float32Array;
   life: Float32Array; maxLife: Float32Array; grav: Float32Array; grow: Float32Array; baseA: Float32Array;
-  points: THREE.Points;
-  private geo: THREE.BufferGeometry;
+  mesh: THREE.InstancedMesh;
+  private dummy = new THREE.Object3D();
+  private additive: boolean;
 
   constructor(scene: THREE.Scene, max: number, additive: boolean, uniforms: Record<string, THREE.IUniform>) {
     this.max = max;
+    this.additive = additive;
     this.pos = new Float32Array(max * 3);
     this.vel = new Float32Array(max * 3);
     this.col = new Float32Array(max * 4);
@@ -153,18 +35,20 @@ class ParticlePool {
     this.grav = new Float32Array(max);
     this.grow = new Float32Array(max);
     this.baseA = new Float32Array(max);
-    this.geo = new THREE.BufferGeometry();
-    this.geo.setAttribute('position', new THREE.BufferAttribute(this.pos, 3).setUsage(THREE.DynamicDrawUsage));
-    this.geo.setAttribute('aColor', new THREE.BufferAttribute(this.col, 4).setUsage(THREE.DynamicDrawUsage));
-    this.geo.setAttribute('aSize', new THREE.BufferAttribute(this.size, 1).setUsage(THREE.DynamicDrawUsage));
+    const g = additive ? new THREE.OctahedronGeometry(0.5, 0) : new THREE.IcosahedronGeometry(0.5, 0);
+    g.setAttribute('iColor', new THREE.InstancedBufferAttribute(new Float32Array(max * 3), 3).setUsage(THREE.DynamicDrawUsage));
+    g.setAttribute('iAlpha', new THREE.InstancedBufferAttribute(new Float32Array(max), 1).setUsage(THREE.DynamicDrawUsage));
+    g.setAttribute('iEmit', new THREE.InstancedBufferAttribute(new Float32Array(max), 1).setUsage(THREE.DynamicDrawUsage));
     const mat = new THREE.ShaderMaterial({
-      uniforms, vertexShader: PART_VERT, fragmentShader: PART_FRAG, transparent: true, depthWrite: false,
+      uniforms, vertexShader: PUFF_VERT, fragmentShader: PUFF_FRAG, transparent: true, depthWrite: false,
       blending: additive ? THREE.AdditiveBlending : THREE.NormalBlending,
     });
-    this.points = new THREE.Points(this.geo, mat);
-    this.points.frustumCulled = false;
-    this.points.renderOrder = additive ? 5 : 4;
-    scene.add(this.points);
+    this.mesh = new THREE.InstancedMesh(g, mat, max);
+    this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.mesh.count = 0;
+    this.mesh.frustumCulled = false;
+    this.mesh.renderOrder = additive ? 6 : 5;
+    scene.add(this.mesh);
   }
 
   spawn(x: number, y: number, z: number, vx: number, vy: number, vz: number, r: number, g: number, b: number, a: number, size: number, life: number, grav: number, grow = 0) {
@@ -181,7 +65,9 @@ class ParticlePool {
     this.grow[k] = grow;
   }
 
-  update(dt: number) {
+  update(dt: number, time = 0) {
+    const A = this.mesh.geometry.attributes;
+    const iCol = A.iColor.array as Float32Array, iAl = A.iAlpha.array as Float32Array, iEm = A.iEmit.array as Float32Array;
     for (let k = 0; k < this.n; k++) {
       this.life[k] -= dt;
       if (this.life[k] <= 0) {
@@ -199,12 +85,20 @@ class ParticlePool {
       this.pos[o + 2] += this.vel[o + 2] * dt;
       this.size[k] += this.grow[k] * dt;
       const t = this.life[k] / this.maxLife[k];
-      this.col[k * 4 + 3] = this.baseA[k] * Math.min(1, t * 2.5);
+      // ease in quickly, ease out over the last part of the life
+      const fade = Math.min(1, (1 - t) * 8) * Math.min(1, t * 2.5);
+      this.dummy.position.set(this.pos[o], this.pos[o + 1], this.pos[o + 2]);
+      this.dummy.rotation.set(k * 1.3 + time * 2, k * 0.7 + time * 1.5, 0);
+      this.dummy.scale.setScalar(Math.max(0.001, this.size[k] * (this.additive ? 0.6 + 0.4 * t : 1)));
+      this.dummy.updateMatrix();
+      this.mesh.setMatrixAt(k, this.dummy.matrix);
+      iCol[k * 3] = this.col[k * 4]; iCol[k * 3 + 1] = this.col[k * 4 + 1]; iCol[k * 3 + 2] = this.col[k * 4 + 2];
+      iAl[k] = this.baseA[k] * fade;
+      iEm[k] = this.additive ? 1 : 0.15;
     }
-    this.geo.setDrawRange(0, this.n);
-    (this.geo.attributes.position as THREE.BufferAttribute).needsUpdate = true;
-    (this.geo.attributes.aColor as THREE.BufferAttribute).needsUpdate = true;
-    (this.geo.attributes.aSize as THREE.BufferAttribute).needsUpdate = true;
+    this.mesh.count = this.n;
+    this.mesh.instanceMatrix.needsUpdate = true;
+    A.iColor.needsUpdate = true; A.iAlpha.needsUpdate = true; A.iEmit.needsUpdate = true;
   }
 
   private copy(from: number, to: number) {
@@ -226,15 +120,17 @@ export class Particles {
   sparks: ParticlePool;
   puffs: ParticlePool;
   uniforms = { uScale: { value: 600 } };
+  private time = 0;
 
-  constructor(scene: THREE.Scene) {
-    this.sparks = new ParticlePool(scene, 4000, true, this.uniforms);
-    this.puffs = new ParticlePool(scene, 2500, false, this.uniforms);
+  constructor(scene: THREE.Scene, shading: Record<string, THREE.IUniform>) {
+    this.sparks = new ParticlePool(scene, 3000, true, shading);
+    this.puffs = new ParticlePool(scene, 2500, false, shading);
   }
 
   update(dt: number) {
-    this.sparks.update(dt);
-    this.puffs.update(dt);
+    this.time += dt;
+    this.sparks.update(dt, this.time);
+    this.puffs.update(dt, this.time);
   }
 
   explosion(x: number, y: number, z: number, r: number) {
@@ -277,6 +173,16 @@ export class Particles {
     }
   }
 
+  /** a soft puff for state changes (melting, freezing...) */
+  puff(x: number, y: number, z: number, color: number) {
+    const R = Math.random;
+    const c = new THREE.Color(color);
+    for (let i = 0; i < 7; i++) {
+      this.puffs.spawn(x + (R() - 0.5), y + R() * 0.4, z + (R() - 0.5), (R() - 0.5) * 1.5, 1 + R() * 1.5, (R() - 0.5) * 1.5,
+        c.r, c.g, c.b, 0.45, 0.6 + R() * 0.5, 0.6 + R() * 0.5, -0.5, 1.4);
+    }
+  }
+
   /** soft spray drifting off falling water */
   mist(x: number, y: number, z: number, night: number) {
     const R = Math.random;
@@ -298,78 +204,6 @@ export class Particles {
       this.puffs.spawn(x + (R() - 0.5), y + R() * 0.5, z + (R() - 0.5), (R() - 0.5) * 2, 1 + R() * 2, (R() - 0.5) * 2,
         c.r, c.g, c.b, 0.5, 0.5 + R() * 0.4, 0.5 + R() * 0.4, 4, 0.6);
     }
-  }
-}
-
-// ───────────────────────────── debris ─────────────────────────────
-
-export class DebrisRenderer {
-  mesh: THREE.InstancedMesh;
-  private data: Float32Array = new Float32Array(0);
-  private age = 0;
-  private dummy = new THREE.Object3D();
-  private colors: THREE.Color[] = [];
-  static MAX = 12000;
-
-  constructor(scene: THREE.Scene) {
-    const geo = new THREE.BoxGeometry(0.94, 0.94, 0.94);
-    const mat = new THREE.MeshStandardMaterial({ roughness: 0.85 });
-    mat.onBeforeCompile = (sh) => {
-      sh.fragmentShader = sh.fragmentShader
-        .replace('#include <color_fragment>', '#include <color_fragment>\nvec3 glowC = max(diffuseColor.rgb - 1.0, vec3(0.0));\ndiffuseColor.rgb = min(diffuseColor.rgb, vec3(1.0));')
-        .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance += glowC;');
-    };
-    this.mesh = new THREE.InstancedMesh(geo, mat, DebrisRenderer.MAX);
-    this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    this.mesh.count = 0;
-    this.mesh.castShadow = true;
-    this.mesh.receiveShadow = true;
-    this.mesh.frustumCulled = false;
-    for (let m = 0; m < MAT_COUNT; m++) {
-      const c = new THREE.Color(MATERIALS[m].color);
-      if (m === M.LAVA) c.setRGB(4.5, 1.1, 0.15);
-      if (m === M.EMBER || m === M.FIRE) c.setRGB(4, 1.4, 0.3);
-      this.colors.push(c);
-    }
-    // touch instanceColor once so the buffer exists
-    this.mesh.setColorAt(0, this.colors[1]);
-    scene.add(this.mesh);
-  }
-
-  set(data: Float32Array) {
-    this.data = data;
-    this.age = 0;
-    const n = Math.min(DebrisRenderer.MAX, data.length / 7);
-    for (let k = 0; k < n; k++) {
-      const m = data[k * 7 + 6];
-      const c = this.colors[m] ?? this.colors[1];
-      this.mesh.setColorAt(k, c);
-    }
-    if (this.mesh.instanceColor) this.mesh.instanceColor.needsUpdate = true;
-  }
-
-  update(dt: number, time: number) {
-    this.age = Math.min(this.age + dt, 0.1);
-    const d = this.data;
-    const n = Math.min(DebrisRenderer.MAX, d.length / 7);
-    const t = this.age;
-    for (let k = 0; k < n; k++) {
-      const o = k * 7;
-      const x = d[o] + d[o + 3] * t, y = d[o + 1] + d[o + 4] * t - 15 * t * t, z = d[o + 2] + d[o + 5] * t;
-      this.dummy.position.set(x, y, z);
-      const spin = Math.abs(d[o + 3]) + Math.abs(d[o + 5]) > 2 ? 1 : 0;
-      this.dummy.rotation.set(spin * (time * 3 + k), spin * (time * 2.3 + k * 1.7), 0);
-      const s = d[o + 6] === M.WATER || d[o + 6] === M.LAVA ? 0.75 : 1;
-      this.dummy.scale.setScalar(s);
-      this.dummy.updateMatrix();
-      this.mesh.setMatrixAt(k, this.dummy.matrix);
-    }
-    this.mesh.count = n;
-    this.mesh.instanceMatrix.needsUpdate = true;
-  }
-
-  get count() {
-    return this.mesh.count;
   }
 }
 

@@ -13,9 +13,9 @@ function smooth(a: number, b: number, x: number) {
 }
 
 const C = (h: number) => new THREE.Color(h);
-const DAY_TOP = C(0x2a73d6), DAY_HOR = C(0xa8d3ef);
-const SET_TOP = C(0x3a4f8a), SET_HOR = C(0xf2a56b);
-const NIGHT_TOP = C(0x050a1c), NIGHT_HOR = C(0x16223f);
+const DAY_TOP = C(0x6fa8e6), DAY_HOR = C(0xf4dcc8);
+const SET_TOP = C(0x6a6aa8), SET_HOR = C(0xf7a98a);
+const NIGHT_TOP = C(0x0b1030), NIGHT_HOR = C(0x2a2f5a);
 
 export class SkyRig {
   group = new THREE.Group();
@@ -166,7 +166,7 @@ export class SkyRig {
 
     const top = lerpColor(lerpColor(NIGHT_TOP, DAY_TOP, day), SET_TOP, dusk * 0.6);
     const hor = lerpColor(lerpColor(NIGHT_HOR, DAY_HOR, day), SET_HOR, dusk * 0.85);
-    const bot = lerpColor(hor, top, 0.55).multiplyScalar(0.85);
+    const bot = lerpColor(lerpColor(hor, top, 0.75), C(0x9fb8e8), 0.35 * day);
     const sunCol = lerpColor(C(0xffb070), C(0xfff2dc), smooth(0.0, 0.4, elev));
     const u = this.skyMat.uniforms;
     u.uTop.value.copy(top);
@@ -187,16 +187,16 @@ export class SkyRig {
     this.sun.target.position.copy(this.center);
     if (useSun) {
       this.sun.color.copy(sunCol);
-      this.sun.intensity = 2.7 * fade;
+      this.sun.intensity = 2.9 * fade;
     } else {
       this.sun.color.set(0xa8bcff);
       this.sun.intensity = 1.2 * fade;
     }
-    this.hemi.color.copy(lerpColor(C(0x2a3a66), C(0xc4ddff), day));
-    this.hemi.groundColor.copy(lerpColor(C(0x1a1c28), C(0x8d97a8), day)); // bounce light off the cloud sea
-    this.hemi.intensity = 1.0 + 1.3 * day;
+    this.hemi.color.copy(lerpColor(C(0x34406e), C(0xcfe2ff), day));
+    this.hemi.groundColor.copy(lerpColor(C(0x1c1e30), C(0xb3a597), day)); // warm bounce light
+    this.hemi.intensity = 0.75 + 0.75 * day;
     this.fill.position.copy(this.center).add(new THREE.Vector3(-sunDir.x * 120, -90, -sunDir.z * 120));
-    this.fill.intensity = 0.45 + 2.05 * day;
+    this.fill.intensity = 0.25 + 0.75 * day;
     this.fill.color.copy(lerpColor(C(0x6070a0), C(0xd2defa), day));
 
     this.fogColor.copy(hor);

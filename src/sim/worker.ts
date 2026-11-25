@@ -1,20 +1,25 @@
 /// <reference lib="webworker" />
-// Simulation worker: owns the world, runs the fixed-rate tick loop, meshes dirty chunks
-// and streams meshes, debris, gases, events and light clusters to the main thread.
+// Simulation worker: owns the world, runs the fixed 30 Hz tick, meshes dirty chunks
+// (surface nets), keeps the physics colliders in sync, and streams meshes, rigid bodies,
+// droplets, gas particles, trees, events and light clusters to the main thread.
 
-import { BASE_TPS, CHUNKS, CS, CX, CZ, LAYER, SX, SY, SZ } from './constants.ts';
-import { generateIsland } from './generate.ts';
-import { M, MATERIALS } from './materials.ts';
+import { BASE_TPS, CHUNKS, CX, CZ, LAYER, SX, SY, SZ } from './constants.ts';
+import { GAS_FIRE } from './gas.ts';
+import { generateIsland, type DecorSpec } from './generate.ts';
+import { M } from './materials.ts';
 import { meshChunk, type ChunkMesh } from './mesher.ts';
+import { initPhysics } from './physics.ts';
 import type { ToMain, ToolApply, ToWorker } from './protocol.ts';
 import { Simulator } from './simulate.ts';
 import { decodeWorld, encodeWorld } from './snapshot.ts';
 import { applyTool } from './tools.ts';
+import { TREE_BURNING, type TreeState } from './trees.ts';
 import { World } from './world.ts';
 
 const ctx = self as unknown as DedicatedWorkerGlobalScope;
 const world = new World();
-const sim = new Simulator(world);
+let sim: Simulator | null = null;
+let decor: DecorSpec[] = [];
 
 let paused = false;
 let speed = 1;
@@ -25,12 +30,12 @@ let stepOnce = false;
 const tools: ToolApply[] = [];
 const undo: Uint8Array[] = [];
 const MAX_UNDO = 20;
+const pending: ToWorker[] = [];
 
 const lavaCount = new Float32Array(CHUNKS);
 const lavaPos = new Float32Array(CHUNKS * 3);
 
-// rolling stats
-let tickMsAvg = 0, meshMsAvg = 0, ticksThisSecond = 0, tps = 0, secondStart = performance.now();
+let tickMsAvg = 0, meshMsAvg = 0, liquidMsAvg = 0, physMsAvg = 0, ticksThisSecond = 0, tps = 0, secondStart = performance.now();
 
 function post(msg: ToMain, transfer: Transferable[] = []) {
   ctx.postMessage(msg, transfer);
@@ -39,28 +44,30 @@ function post(msg: ToMain, transfer: Transferable[] = []) {
 function transferables(list: ChunkMesh[]): Transferable[] {
   const t: Transferable[] = [];
   for (const m of list) {
-    t.push(m.mats.buffer);
-    for (const b of [m.opaque, m.trans]) {
-      if (!b) continue;
-      t.push(b.pos.buffer, b.nrm.buffer, b.data.buffer, b.idx.buffer);
-    }
+    t.push(m.mats.buffer, m.fills.buffer);
+    if (m.terrain) t.push(m.terrain.pos.buffer, m.terrain.nrm.buffer, m.terrain.col.buffer, m.terrain.col0.buffer, m.terrain.tchg.buffer, m.terrain.aux.buffer);
+    if (m.liquid) t.push(m.liquid.pos.buffer, m.liquid.nrm.buffer, m.liquid.aux.buffer);
   }
   return t;
 }
 
-function recordMesh(m: ChunkMesh) {
+function record(m: ChunkMesh) {
   lavaCount[m.c] = m.lava;
   lavaPos[m.c * 3] = m.lavaPos[0];
   lavaPos[m.c * 3 + 1] = m.lavaPos[1];
   lavaPos[m.c * 3 + 2] = m.lavaPos[2];
+  if (m.hasTerrain) sim!.physics.setTerrain(m.c, m.collider);
+  m.collider = null; // stays in the worker
 }
 
-/** Run the sim for a moment off-screen so streams, the waterfall and the lake surface
- *  have settled before the player sees the island. */
 function warmUp(ticks: number) {
   for (let k = 0; k < ticks; k++) {
-    sim.step();
-    if (k % 40 === 0) post({ t: 'progress', p: 0.15 + 0.25 * (k / ticks), label: 'Letting the water settle…' });
+    if (k % 30 === 0) {
+      // keep colliders current so settling grains have something to land on
+      for (let c = 0; c < CHUNKS; c++) if (world.dirty[c] & 1) { world.dirty[c] = 0; record(meshChunk(world, c)); }
+      post({ t: 'progress', p: 0.25 + 0.25 * (k / ticks), label: 'Letting the water settle…' });
+    }
+    sim!.step();
   }
   world.events.length = 0;
 }
@@ -70,11 +77,11 @@ function meshAll(label: string) {
   let batch: ChunkMesh[] = [];
   for (let c = 0; c < CHUNKS; c++) {
     const m = meshChunk(world, c);
-    recordMesh(m);
+    record(m);
     batch.push(m);
     if (batch.length >= 32 || c === CHUNKS - 1) {
       post({ t: 'chunks', list: batch, full: true }, transferables(batch));
-      post({ t: 'progress', p: 0.4 + 0.6 * ((c + 1) / CHUNKS), label });
+      post({ t: 'progress', p: 0.5 + 0.5 * ((c + 1) / CHUNKS), label });
       batch = [];
     }
   }
@@ -83,98 +90,94 @@ function meshAll(label: string) {
 function meshDirty(budgetMs: number) {
   const t0 = performance.now();
   const list: ChunkMesh[] = [];
-  // start at a rotating offset so a busy area can't starve the rest
   const start = (world.tick * 37) % CHUNKS;
-  for (let k = 0; k < CHUNKS; k++) {
-    const c = (start + k) % CHUNKS;
-    if (!world.dirty[c]) continue;
-    world.dirty[c] = 0;
-    const m = meshChunk(world, c);
-    recordMesh(m);
-    list.push(m);
-    if (performance.now() - t0 > budgetMs) break;
+  // terrain edits first (that's what the player is looking at), then liquid surfaces
+  outer: for (const want of [1, 2]) {
+    for (let k = 0; k < CHUNKS; k++) {
+      const c = (start + k) % CHUNKS;
+      const d = world.dirty[c];
+      if (!(d & want)) continue;
+      world.dirty[c] = 0;
+      const m = meshChunk(world, c, (d & 1) !== 0);
+      record(m);
+      list.push(m);
+      if (performance.now() - t0 > budgetMs) break outer;
+    }
   }
   if (list.length) {
     post({ t: 'chunks', list, full: false }, transferables(list));
-    const dt = performance.now() - t0;
-    meshMsAvg = meshMsAvg * 0.9 + dt * 0.1;
+    meshMsAvg = meshMsAvg * 0.9 + (performance.now() - t0) * 0.1;
   }
-}
-
-/** falling water positions (for spray / mist), refreshed by gasList() */
-let falls: number[] = [];
-
-function gasList(): Float32Array {
-  const out: number[] = [];
-  falls = [];
-  const mat = world.mat, life = world.life;
-  for (let c = 0; c < CHUNKS; c++) {
-    if (!world.awake[c]) continue;
-    const ox = (c % CX) * CS, oz = (Math.floor(c / CX) % CZ) * CS, oy = Math.floor(c / (CX * CZ)) * CS;
-    for (let y = oy; y < oy + CS; y++) {
-      for (let z = oz; z < oz + CS; z++) {
-        const row = z * SX + y * LAYER;
-        for (let x = ox; x < ox + CS; x++) {
-          const m = mat[row + x];
-          if (m === M.WATER) {
-            if (y > 0 && falls.length < 900 && mat[row + x - LAYER] === M.AIR && (x * 7 + z * 13 + y) % 3 === 0) falls.push(x + 0.5, y + 0.5, z + 0.5);
-            continue;
-          }
-          if (m !== M.FIRE && m !== M.SMOKE && m !== M.STEAM) continue;
-          const kind = m === M.FIRE ? 0 : m === M.SMOKE ? 1 : 2;
-          const maxLife = m === M.FIRE ? 30 : MATERIALS[m].life[1];
-          const l = Math.min(0.999, life[row + x] / maxLife);
-          out.push(x + 0.5, y + 0.5, z + 0.5, kind + l);
-          if (out.length >= 24000 * 4) return new Float32Array(out);
-        }
-      }
-    }
-  }
-  return new Float32Array(out);
 }
 
 function lightClusters(): { lights: number[]; fire: number } {
+  const s = sim!;
+  // bin fire particles per chunk
+  const fire = new Float32Array(CHUNKS);
+  const fx = new Float32Array(CHUNKS), fy = new Float32Array(CHUNKS), fz = new Float32Array(CHUNKS);
+  const g = s.gas;
+  let total = 0;
+  for (let k = 0; k < g.n; k++) {
+    if (g.type[k] !== GAS_FIRE) continue;
+    const x = g.x[k], y = g.y[k], z = g.z[k];
+    if (x < 0 || y < 0 || z < 0 || x >= SX || y >= SY || z >= SZ) continue;
+    const c = (x >> 4) + (z >> 4) * CX + (y >> 4) * CX * CZ;
+    fire[c]++; fx[c] += x; fy[c] += y; fz[c] += z;
+    total++;
+  }
   const scores: [number, number][] = [];
-  let fireTotal = 0;
   for (let c = 0; c < CHUNKS; c++) {
-    const f = sim.fireCount[c];
-    fireTotal += f;
-    const s = lavaCount[c] * 0.3 + f * 1.5;
-    if (s >= 4) scores.push([s, c]);
+    const sc = lavaCount[c] * 0.3 + fire[c] * 0.9;
+    if (sc >= 4) scores.push([sc, c]);
   }
   scores.sort((a, b) => b[0] - a[0]);
   const lights: number[] = [];
   for (let k = 0; k < Math.min(6, scores.length); k++) {
     const c = scores[k][1];
-    const f = sim.fireCount[c], l = lavaCount[c];
-    let x: number, y: number, z: number;
-    if (f > 0 && (f * 1.5 > l * 0.3 || l === 0)) {
-      x = sim.fireSum[c * 3] / f + 0.5; y = sim.fireSum[c * 3 + 1] / f + 1; z = sim.fireSum[c * 3 + 2] / f + 0.5;
-    } else {
-      x = lavaPos[c * 3]; y = lavaPos[c * 3 + 1]; z = lavaPos[c * 3 + 2];
-    }
-    lights.push(x, y, z, Math.min(1, scores[k][0] / 80), f > 0 ? 1 : 0);
+    const f = fire[c];
+    if (f > 0 && f * 0.9 >= lavaCount[c] * 0.3) lights.push(fx[c] / f, fy[c] / f + 0.5, fz[c] / f, Math.min(1, scores[k][0] / 60), 1);
+    else lights.push(lavaPos[c * 3], lavaPos[c * 3 + 1], lavaPos[c * 3 + 2], Math.min(1, scores[k][0] / 80), 0);
   }
-  return { lights, fire: fireTotal };
+  for (const t of s.trees.list) if (t.state === TREE_BURNING && lights.length < 6 * 5) lights.push(t.x, t.y + t.h * 0.6, t.z, 0.6, 1);
+  return { lights, fire: total };
 }
 
 function postFrame() {
-  const debris = sim.debris.pack();
-  const gas = gasList();
-  const fallArr = new Float32Array(falls);
+  const s = sim!;
+  const bodies = s.physics.pack();
+  const drops = s.liquids.pack();
+  const gas = s.gas.pack();
+  const trees = s.trees.pack();
+  const newChunks = s.physics.newChunks.splice(0, s.physics.newChunks.length);
   const { lights, fire } = lightClusters();
   const events = world.events.splice(0, world.events.length);
   post({
-    t: 'frame', debris, gas, events, lights, falls: fallArr,
+    t: 'frame', tick: world.tick, bodies, drops, gas, trees, newChunks, events, lights, simTime: world.time,
     stats: {
-      tps, tickMs: tickMsAvg, meshMs: meshMsAvg, awake: sim.stats.awake, heated: sim.stats.heated,
-      debris: sim.debris.count, fire, water: 0,
+      tps, tickMs: tickMsAvg, meshMs: meshMsAvg, liquidMs: liquidMsAvg, physicsMs: physMsAvg,
+      awake: s.stats.awake, heated: s.stats.heated, bodies: s.physics.bodies.length, drops: s.liquids.n,
+      gas: s.gas.n, fire, flow: s.liquids.activity,
     },
-  }, [debris.buffer, gas.buffer, fallArr.buffer]);
+  }, [bodies.buffer, drops.buffer, gas.buffer, trees.buffer]);
+}
+
+function extras() {
+  return JSON.stringify({ trees: sim!.trees.list, decor });
+}
+
+function restoreExtras(json: string | null) {
+  try {
+    const e = JSON.parse(json || '{}') as { trees?: TreeState[]; decor?: DecorSpec[] };
+    sim!.trees.restore(e.trees ?? []);
+    decor = e.decor ?? [];
+  } catch {
+    sim!.trees.restore([]);
+    decor = [];
+  }
 }
 
 function pushUndo() {
-  undo.push(encodeWorld(world));
+  undo.push(encodeWorld(world, extras()));
   if (undo.length > MAX_UNDO) undo.shift();
   post({ t: 'undoState', depth: undo.length });
 }
@@ -184,14 +187,25 @@ function flatSlab() {
   const cx = SX / 2, cz = SZ / 2;
   for (let z = 0; z < SZ; z++) for (let x = 0; x < SX; x++) {
     const d = Math.hypot(x - cx, z - cz);
-    if (d > 44) continue;
-    const depth = Math.round(6 + (1 - d / 44) * 10);
-    for (let y = 30 - depth; y <= 32; y++) {
-      const m = y === 32 ? M.GRASS : y >= 30 ? M.DIRT : M.STONE;
-      world.mat[x + z * SX + y * LAYER] = m;
+    if (d > 45) continue;
+    const bottom = 30 - (6 + (1 - d / 45) * 10);
+    const top = 32.6 - Math.max(0, d - 42) * 0.8;
+    for (let y = Math.floor(bottom) - 1; y <= 33; y++) {
+      const f = Math.max(0, Math.min(1, 0.5 + Math.min(top - (y + 0.5), (y + 0.5) - bottom)));
+      if (f < 0.06) continue;
+      const i = x + z * SX + y * LAYER;
+      world.mat[i] = y >= 32 ? M.GRASS : y >= 30 ? M.DIRT : M.STONE;
+      world.fill[i] = Math.round(f * 255);
     }
   }
   world.markAllDirty();
+  sim!.trees.set([]);
+  decor = [];
+}
+
+function resetAfterJump() {
+  sim!.resetDynamics();
+  world.dirty.fill(3);
 }
 
 let frameCounter = 0;
@@ -199,67 +213,74 @@ function loop() {
   const t0 = performance.now();
   const dt = t0 - last;
   last = t0;
-  if (ready) {
-    let changed = tools.length > 0;
+  if (ready && sim) {
+    const changed = tools.length > 0;
     while (tools.length) applyTool(sim, tools.shift()!);
-    if (!paused) acc = Math.min(4, acc + (dt / 1000) * BASE_TPS * speed);
+    if (!paused) acc = Math.min(3, acc + (dt / 1000) * BASE_TPS * speed);
     let ticks = 0;
-    while ((acc >= 1 && ticks < 4) || stepOnce) {
+    while ((acc >= 1 && ticks < 3) || stepOnce) {
       sim.step();
       tickMsAvg = tickMsAvg * 0.9 + sim.stats.tickMs * 0.1;
+      liquidMsAvg = liquidMsAvg * 0.9 + sim.stats.liquidMs * 0.1;
+      physMsAvg = physMsAvg * 0.9 + sim.stats.physicsMs * 0.1;
       if (!stepOnce) acc -= 1;
       stepOnce = false;
       ticks++;
       ticksThisSecond++;
-      // don't let a slow tick starve meshing
-      if (performance.now() - t0 > 30) { acc = Math.min(acc, 1); break; }
+      if (performance.now() - t0 > 28) { acc = Math.min(acc, 1); break; }
     }
     if (t0 - secondStart >= 1000) {
       tps = (ticksThisSecond * 1000) / (t0 - secondStart);
       ticksThisSecond = 0;
       secondStart = t0;
     }
-    meshDirty(Math.max(4, 22 - (performance.now() - t0)));
+    if (ticks > 0 || changed) meshDirty(Math.max(7, 22 - (performance.now() - t0)));
     frameCounter++;
     if (ticks > 0 || changed || frameCounter % 6 === 0) postFrame();
   }
   const elapsed = performance.now() - t0;
-  setTimeout(loop, Math.max(1, 16 - elapsed));
+  setTimeout(loop, Math.max(1, 15 - elapsed));
 }
 
-ctx.onmessage = (ev: MessageEvent<ToWorker>) => {
-  const msg = ev.data;
+function handle(msg: ToWorker) {
+  const s = sim!;
   switch (msg.t) {
     case 'init': {
-      let ok = false;
-      post({ t: 'progress', p: 0.05, label: 'Raising the island…' });
-      if (msg.save) ok = decodeWorld(world, msg.save);
+      post({ t: 'progress', p: 0.08, label: 'Raising the island…' });
+      let restored = msg.save ? decodeWorld(world, msg.save) : null;
       let info = null;
-      if (!ok) {
-        info = generateIsland(world, msg.seed);
+      if (restored !== null) restoreExtras(restored);
+      else {
+        const isl = generateIsland(world, msg.seed);
+        s.trees.set(isl.trees);
+        decor = isl.decor;
+        info = isl;
         warmUp(240);
+        restored = null;
       }
-      post({ t: 'progress', p: 0.4, label: 'Carving voxels…' });
-      meshAll('Carving voxels…');
+      post({ t: 'progress', p: 0.5, label: 'Shaping the terrain…' });
+      meshAll('Shaping the terrain…');
       ready = true;
-      post({ t: 'ready', seed: world.seed, info });
+      post({ t: 'ready', seed: world.seed, info: info ? strip(info) : null, decor });
       break;
     }
     case 'regen': {
       pushUndo();
-      sim.debris.clear();
-      const info = generateIsland(world, msg.seed);
+      s.resetDynamics();
+      const isl = generateIsland(world, msg.seed);
+      s.trees.set(isl.trees);
+      decor = isl.decor;
       warmUp(240);
       meshAll('Regenerating…');
-      post({ t: 'ready', seed: world.seed, info });
+      post({ t: 'ready', seed: world.seed, info: strip(isl), decor });
       break;
     }
-    case 'clear': {
+    case 'clear':
       pushUndo();
-      sim.debris.clear();
+      s.resetDynamics();
       flatSlab();
+      post({ t: 'ready', seed: world.seed, info: null, decor });
       break;
-    }
     case 'tool':
       tools.push(msg.a);
       break;
@@ -269,48 +290,57 @@ ctx.onmessage = (ev: MessageEvent<ToWorker>) => {
     case 'undo': {
       const snap = undo.pop();
       if (snap) {
-        sim.debris.clear();
-        decodeWorld(world, snap);
+        restoreExtras(decodeWorld(world, snap));
+        resetAfterJump();
+        post({ t: 'ready', seed: world.seed, info: null, decor });
         post({ t: 'toast', text: `Undo (${undo.length} left)` });
       } else post({ t: 'toast', text: 'Nothing to undo' });
       post({ t: 'undoState', depth: undo.length });
       break;
     }
-    case 'pause':
-      paused = msg.v;
-      break;
-    case 'speed':
-      speed = msg.v;
-      break;
-    case 'step':
-      stepOnce = true;
-      break;
+    case 'pause': paused = msg.v; break;
+    case 'speed': speed = msg.v; break;
+    case 'step': stepOnce = true; break;
     case 'inspect': {
       const { x, y, z } = msg;
       if (x >= 0 && y >= 0 && z >= 0 && x < SX && y < SY && z < SZ) {
         const i = x + z * SX + y * LAYER;
-        post({ t: 'inspect', mat: world.mat[i], temp: world.temp[i], life: world.life[i], x, y, z });
+        post({ t: 'inspect', mat: world.mat[i], temp: world.temp[i], life: world.life[i], x, y, z, amount: world.mat[i] === M.AIR ? 0 : (world.fill[i] / 255 || world.mass[i]) });
       }
       break;
     }
     case 'save': {
-      const data = encodeWorld(world);
+      const data = encodeWorld(world, extras());
       post({ t: 'saved', data }, [data.buffer]);
       break;
     }
     case 'load': {
       pushUndo();
-      sim.debris.clear();
-      if (!decodeWorld(world, msg.data)) post({ t: 'toast', text: 'Save file is damaged' });
+      const ex = decodeWorld(world, msg.data);
+      if (ex === null) post({ t: 'toast', text: 'Save file is damaged' });
+      else { restoreExtras(ex); resetAfterJump(); post({ t: 'ready', seed: world.seed, info: null, decor }); }
       break;
     }
     case 'bench': {
       const t = performance.now();
-      for (let k = 0; k < msg.ticks; k++) sim.step();
+      for (let k = 0; k < msg.ticks; k++) s.step();
       post({ t: 'toast', text: `bench ${msg.ticks} ticks: ${((performance.now() - t) / msg.ticks).toFixed(2)} ms/tick` });
       break;
     }
   }
+}
+
+function strip(i: { center: number[]; lake: number[]; mountain: number[]; waterfall: number[]; cave: number[] }) {
+  return { center: i.center, lake: i.lake, mountain: i.mountain, waterfall: i.waterfall, cave: i.cave };
+}
+
+ctx.onmessage = (ev: MessageEvent<ToWorker>) => {
+  if (!sim) pending.push(ev.data);
+  else handle(ev.data);
 };
 
-loop();
+initPhysics().then(() => {
+  sim = new Simulator(world);
+  for (const m of pending.splice(0)) handle(m);
+  loop();
+});

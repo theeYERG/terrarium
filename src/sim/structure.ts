@@ -4,10 +4,11 @@
 
 import { LAYER, SX, SY, SZ, VOLUME } from './constants.ts';
 import { M, T_STRUCT } from './materials.ts';
-import type { Debris } from './debris.ts';
+import type { Physics } from './physics.ts';
 import { F_SOURCE, type World } from './world.ts';
 
 const CAP = 14000;
+const MAX_CHUNK = 1800; // bigger loose pieces stay put (too heavy for the physics budget)
 
 export class Structure {
   private visit = new Int32Array(VOLUME);
@@ -15,12 +16,12 @@ export class Structure {
   private queue = new Int32Array(CAP + 16);
   private comp = 1;
   private w: World;
-  private debris: Debris;
+  private physics: Physics;
   collapsed = 0;
 
-  constructor(w: World, debris: Debris) {
+  constructor(w: World, physics: Physics) {
     this.w = w;
-    this.debris = debris;
+    this.physics = physics;
   }
 
   run(): void {
@@ -98,16 +99,21 @@ export class Structure {
 
   private dropComponent(q: Int32Array, n: number) {
     const w = this.w;
-    if (this.debris.count + n > 12000) return;
-    const rng = w.rng;
-    // the whole piece starts with the same small push so it falls as one chunk
-    const jx = (rng.next() - 0.5) * 1.2, jz = (rng.next() - 0.5) * 1.2;
-    for (let k = 0; k < n; k++) {
-      const i = q[k];
-      const m = w.mat[i];
-      const x = i & 127, z = (i >> 7) & 127, y = i >> 14;
-      this.debris.add(x + 0.5, y + 0.5, z + 0.5, jx, -1, jz, m === M.GRASS ? M.DIRT : m, w.temp[i]);
+    if (n > MAX_CHUNK) return;
+    const cells = Array.from(q.subarray(0, n));
+    if (n <= 3) {
+      // crumbs: just a few rocks
+      for (const i of cells) {
+        const x = i & 127, z = (i >> 7) & 127, y = i >> 14;
+        this.physics.spawnRock(x + 0.5, y + 0.5, z + 0.5, 0, -0.5, 0, w.mat[i] === M.GRASS ? M.DIRT : w.mat[i], w.fill[i], w.temp[i]);
+      }
+    } else if (!this.physics.spawnChunk(cells)) {
+      return;
+    }
+    // the piece now lives in the physics world: clear it from the grid
+    for (const i of cells) {
       w.mat[i] = M.AIR;
+      w.fill[i] = 0;
       w.life[i] = 0;
       w.flags[i] = 0;
       w.wake(i);

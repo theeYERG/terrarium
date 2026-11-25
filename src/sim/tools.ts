@@ -1,101 +1,125 @@
-// Player tools, applied inside the worker so they act on the authoritative grid.
+// Player tools (v2): soft brushes. Every application adds or removes a fraction of fill
+// with a smooth falloff, so holding the mouse grows and carves rounded shapes gradually.
 
 import { LAYER, SX, SY, SZ } from './constants.ts';
-import { M, MATERIALS, State, T_MOVABLE, T_STATE } from './materials.ts';
+import { GAS_FIRE, GAS_SMOKE, GAS_SPARK, GAS_STEAM } from './gas.ts';
+import { M, State, T_STATE } from './materials.ts';
 import type { ToolApply } from './protocol.ts';
 import type { Simulator } from './simulate.ts';
 
-function forSphere(cx: number, cy: number, cz: number, r: number, fn: (i: number, d: number, x: number, y: number, z: number) => void) {
-  const R = Math.ceil(r);
-  for (let y = Math.max(0, cy - R); y <= Math.min(SY - 1, cy + R); y++) {
-    for (let z = Math.max(0, cz - R); z <= Math.min(SZ - 1, cz + R); z++) {
-      for (let x = Math.max(0, cx - R); x <= Math.min(SX - 1, cx + R); x++) {
-        const dx = x - cx, dy = y - cy, dz = z - cz;
-        const d2 = dx * dx + dy * dy + dz * dz;
-        if (d2 > r * r + 0.25) continue;
-        fn(x + z * SX + y * LAYER, Math.sqrt(d2) / Math.max(r, 0.5), x, y, z);
+function falloff(d: number, r: number) {
+  // 1 in the middle, smooth down to 0 at r + 0.9
+  const t = Math.min(1, Math.max(0, (d - r * 0.55) / (r * 0.45 + 0.9)));
+  return 1 - t * t * (3 - 2 * t);
+}
+
+function forBall(cx: number, cy: number, cz: number, r: number, fn: (i: number, f: number, x: number, y: number, z: number) => void) {
+  const R = Math.ceil(r + 1);
+  for (let y = Math.max(0, Math.floor(cy - R)); y <= Math.min(SY - 1, Math.ceil(cy + R)); y++) {
+    for (let z = Math.max(0, Math.floor(cz - R)); z <= Math.min(SZ - 1, Math.ceil(cz + R)); z++) {
+      for (let x = Math.max(0, Math.floor(cx - R)); x <= Math.min(SX - 1, Math.ceil(cx + R)); x++) {
+        const d = Math.hypot(x + 0.5 - cx, y + 0.5 - cy, z + 0.5 - cz);
+        const f = falloff(d, Math.max(0.6, r));
+        if (f <= 0.01) continue;
+        fn(x + z * SX + y * LAYER, f, x, y, z);
       }
     }
   }
 }
 
+const GAS_OF: Record<number, number> = { [M.FIRE]: GAS_FIRE, [M.SMOKE]: GAS_SMOKE, [M.STEAM]: GAS_STEAM, [M.EMBER]: GAS_SPARK };
+
 export function applyTool(sim: Simulator, a: ToolApply): void {
   const w = sim.w;
   const rng = w.rng;
   const r = a.r;
+  const m = a.mat;
   switch (a.tool) {
     case 'add': {
-      const cx = a.x + a.nx, cy = a.y + a.ny, cz = a.z + a.nz;
-      const m = a.mat;
-      const isGas = T_STATE[m] === State.GAS;
-      // centre the blob so it sits on the surface rather than half inside it
-      const off = Math.max(0, r - 1);
-      const ox = Math.round(cx + a.nx * off), oy = Math.round(cy + a.ny * off), oz = Math.round(cz + a.nz * off);
-      forSphere(ox, oy, oz, r, (i) => {
+      const off = Math.max(0.6, r * 0.8);
+      const cx = a.x + 0.5 + a.nx * off, cy = a.y + 0.5 + a.ny * off, cz = a.z + 0.5 + a.nz * off;
+      const gasType = GAS_OF[m];
+      if (gasType !== undefined) {
+        const count = Math.round(6 + r * 6);
+        for (let k = 0; k < count; k++) {
+          sim.gas.spawn(gasType, cx + (rng.next() - 0.5) * r * 2, cy + (rng.next() - 0.5) * r, cz + (rng.next() - 0.5) * r * 2);
+        }
+        if (m === M.FIRE) forBall(cx, cy, cz, r, (i, f) => { w.temp[i] = Math.max(w.temp[i], 300 + 500 * f); w.keepAwake(i); w.markHot(i); });
+        break;
+      }
+      const st = T_STATE[m];
+      forBall(cx, cy, cz, r, (i, f) => {
         const cur = w.mat[i];
-        if (cur === M.AIR || (T_STATE[cur] === State.GAS && !isGas)) {
-          if (isGas && rng.next() < 0.4) return;
-          w.place(i, m);
+        if (st === State.LIQUID) {
+          const add = 0.35 * f;
+          if (cur === M.AIR || T_STATE[cur] === State.GAS) w.place(i, m, 0, add);
+          else if (cur === m) { w.mass[i] = Math.min(1.1, w.mass[i] + add); w.wakeLiquid(i); }
+          return;
+        }
+        const add = 255 * 0.42 * f;
+        if (cur === M.AIR || T_STATE[cur] === State.GAS) {
+          if (add >= 14) w.place(i, m, 0, add);
+        } else if (cur === m) {
+          w.setFill(i, w.fill[i] + add);
         }
       });
       break;
     }
     case 'erase':
     case 'dig': {
-      forSphere(a.x, a.y, a.z, r, (i) => {
-        const m = w.mat[i];
-        if (m === M.AIR) return;
-        if (a.tool === 'dig') {
-          const st = T_STATE[m];
-          if (st === State.LIQUID || st === State.GAS) return;
+      forBall(a.x + 0.5, a.y + 0.5, a.z + 0.5, r, (i, f) => {
+        const cur = w.mat[i];
+        if (cur === M.AIR) return;
+        const st = T_STATE[cur];
+        if (st === State.LIQUID) {
+          if (a.tool === 'dig') return;
+          w.mass[i] -= 0.45 * f;
+          if (w.mass[i] < 0.02) w.set(i, M.AIR); else w.wakeLiquid(i);
+          return;
         }
-        w.set(i, M.AIR, w.ambient[i >> 14]);
+        if (st !== State.SOLID && st !== State.POWDER) return;
+        w.setFill(i, w.fill[i] - 255 * 0.45 * f);
       });
       break;
     }
     case 'heat':
     case 'cool': {
       const heat = a.tool === 'heat';
-      forSphere(a.x, a.y, a.z, r + 1, (i, d) => {
-        const f = Math.max(0.2, 1 - d * 0.7);
+      forBall(a.x + 0.5, a.y + 0.5, a.z + 0.5, r + 1, (i, f) => {
         if (heat) w.temp[i] = Math.min(2600, w.temp[i] + 110 * f);
         else w.temp[i] = Math.max(-150, w.temp[i] - 70 * f);
-        const c = (i & 127) >> 4;
-        const cz = ((i >> 7) & 127) >> 4;
-        const cy = (i >> 14) >> 4;
-        const ci = c + cz * 8 + cy * 64;
-        w.awake[ci] = 6;
-        w.hot[ci] = Math.max(w.hot[ci], 10);
+        w.keepAwake(i);
+        w.markHot(i);
       });
+      if (heat && rng.next() < 0.4) sim.gas.spawn(GAS_SMOKE, a.x + 0.5, a.y + 1.5, a.z + 0.5, 0, 0.5, 0, 0.8);
       break;
     }
-    case 'explode': {
+    case 'explode':
       w.explosions.push(a.x + 0.5, a.y + 0.5, a.z + 0.5, 3 + r * 1.3);
       break;
-    }
     case 'pour': {
-      const m = a.mat;
       const st = T_STATE[m];
-      const isGas = st === State.GAS;
-      const h = isGas ? 1 : Math.min(SY - 2, a.y + 10 + Math.round(r)) - a.y;
-      const baseY = a.y + (isGas ? a.ny : h);
-      const spread = r + 1;
-      const count = Math.max(2, Math.round(r * 2.5));
-      for (let k = 0; k < count; k++) {
-        const ang = rng.next() * Math.PI * 2;
-        const rad = Math.sqrt(rng.next()) * spread;
-        const x = Math.round(a.x + Math.cos(ang) * rad), z = Math.round(a.z + Math.sin(ang) * rad);
-        const y = Math.min(SY - 1, Math.max(0, baseY + (isGas ? 0 : rng.int(3))));
-        if (x < 0 || z < 0 || x >= SX || z >= SZ) continue;
-        const i = x + z * SX + y * LAYER;
-        if (!T_MOVABLE[w.mat[i]]) continue;
-        if (st === State.SOLID) {
-          // solids rain down as flying debris and land as blocks
-          sim.debris.add(x + 0.5, y + 0.5, z + 0.5, 0, -4 - rng.next() * 4, 0, m, w.defaultTemp(m, y));
-        } else if (m === M.FIRE) {
-          w.place(i, M.EMBER);
-        } else {
-          w.place(i, m);
+      const gasType = GAS_OF[m];
+      if (gasType !== undefined) {
+        for (let k = 0; k < 4 + r * 2; k++) {
+          sim.gas.spawn(gasType, a.x + 0.5 + (rng.next() - 0.5) * r * 2, a.y + 1.2, a.z + 0.5 + (rng.next() - 0.5) * r * 2);
+        }
+        break;
+      }
+      const top = Math.min(SY - 1.5, a.y + 10 + r);
+      const spread = r + 0.5;
+      if (st === State.LIQUID) {
+        const count = Math.round(3 + r * 3);
+        for (let k = 0; k < count; k++) {
+          const ang = rng.next() * Math.PI * 2, rad = Math.sqrt(rng.next()) * spread;
+          sim.liquids.spawnDrop(m, a.x + 0.5 + Math.cos(ang) * rad, top + rng.next(), a.z + 0.5 + Math.sin(ang) * rad,
+            0, -4 - rng.next() * 3, 0, 0.12, w.defaultTemp(m, Math.floor(top)));
+        }
+      } else {
+        const count = Math.max(1, Math.round(r * 0.8));
+        for (let k = 0; k < count; k++) {
+          const ang = rng.next() * Math.PI * 2, rad = Math.sqrt(rng.next()) * spread;
+          sim.pourSolid(a.x + 0.5 + Math.cos(ang) * rad, top + rng.next(), a.z + 0.5 + Math.sin(ang) * rad, m, 200);
         }
       }
       break;
@@ -103,12 +127,4 @@ export function applyTool(sim: Simulator, a: ToolApply): void {
     case 'inspect':
       break;
   }
-}
-
-export function describeCell(sim: Simulator, x: number, y: number, z: number) {
-  const w = sim.w;
-  if (x < 0 || y < 0 || z < 0 || x >= SX || y >= SY || z >= SZ) return null;
-  const i = x + z * SX + y * LAYER;
-  const m = w.mat[i];
-  return { mat: m, temp: w.temp[i], life: w.life[i], name: MATERIALS[m].name };
 }

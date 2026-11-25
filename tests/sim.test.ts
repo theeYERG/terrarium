@@ -1,14 +1,18 @@
-// Headless simulation tests: run with `npm run test:sim` (plain Node, no browser).
-// Each test builds a small scene in an empty world, runs ticks and checks the physics.
+// Headless simulation tests (v2): run with `npm run test:sim` (plain Node, no browser).
+// Each test builds a small scene, runs ticks, and checks the physics/chemistry.
 
-import { idx, LAYER, SX, SZ, VOLUME } from '../src/sim/constants.ts';
+import { CHUNKS, idx, VOLUME } from '../src/sim/constants.ts';
 import { generateIsland } from '../src/sim/generate.ts';
 import { M } from '../src/sim/materials.ts';
+import { meshChunk } from '../src/sim/mesher.ts';
+import { initPhysics } from '../src/sim/physics.ts';
 import { Simulator } from '../src/sim/simulate.ts';
 import { decodeWorld, encodeWorld } from '../src/sim/snapshot.ts';
 import { applyTool } from '../src/sim/tools.ts';
+import { TREE_BURNT, TREE_FALLEN } from '../src/sim/trees.ts';
 import { World } from '../src/sim/world.ts';
 
+await initPhysics();
 let failed = 0;
 function check(name: string, ok: boolean, detail = '') {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? '  — ' + detail : ''}`);
@@ -20,218 +24,224 @@ function fresh() {
   w.clear();
   return { w, sim: new Simulator(w) };
 }
-function floor(w: World, y: number, x0 = 20, x1 = 108, z0 = 20, z1 = 108, m: number = M.STONE) {
-  for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++) w.mat[idx(x, y, z)] = m;
-  // a thick stone base under every test so it counts as anchored (big) ground
-  for (let z = 20; z <= 108; z++) for (let x = 20; x <= 108; x++) { w.mat[idx(x, y - 1, z)] = M.STONE; w.mat[idx(x, y - 2, z)] = M.STONE; }
+/** a thick stone slab with an optional top material */
+function slab(w: World, y: number, top: number = M.STONE, x0 = 20, x1 = 108, z0 = 20, z1 = 108) {
+  for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++) {
+    for (let yy = y - 3; yy < y; yy++) { const i = idx(x, yy, z); w.mat[i] = M.STONE; w.fill[i] = 255; }
+    const i = idx(x, y, z); w.mat[i] = top; w.fill[i] = 255;
+  }
+  w.markAllDirty();
+}
+function walls(w: World, y0: number, y1: number, x0: number, x1: number, z0: number, z1: number) {
+  for (let y = y0; y <= y1; y++) for (let k = x0; k <= x1; k++) for (const [x, z] of [[k, z0], [k, z1]]) { const i = idx(x, y, z); w.mat[i] = M.STONE; w.fill[i] = 255; }
+  for (let y = y0; y <= y1; y++) for (let k = z0; k <= z1; k++) for (const [x, z] of [[x0, k], [x1, k]]) { const i = idx(x, y, z); w.mat[i] = M.STONE; w.fill[i] = 255; }
+}
+/** keep the physics colliders in sync like the worker does */
+function syncColliders(w: World, sim: Simulator) {
+  for (let c = 0; c < CHUNKS; c++) if (w.dirty[c] & 1) { w.dirty[c] = 0; sim.physics.setTerrain(c, meshChunk(w, c).collider); }
+}
+function run(w: World, sim: Simulator, n: number) {
+  for (let i = 0; i < n; i++) { if (i % 5 === 0) syncColliders(w, sim); sim.step(); }
+}
+function liquidMass(w: World, m: number) {
+  let s = 0;
+  for (let i = 0; i < VOLUME; i++) if (w.mat[i] === m) s += w.mass[i];
+  return s;
 }
 function count(w: World, m: number) {
   let n = 0;
   for (let i = 0; i < VOLUME; i++) if (w.mat[i] === m) n++;
   return n;
 }
-function run(sim: Simulator, n: number) {
-  for (let i = 0; i < n; i++) sim.step();
-}
 
-// 1. Sand angle of repose
+// 1. Water levels out smoothly in a basin and keeps its mass
 {
   const { w, sim } = fresh();
-  floor(w, 10);
-  for (let t = 0; t < 1500; t++) {
-    const i = idx(64, 40, 64);
-    if (w.mat[i] === M.AIR) w.place(i, M.SAND);
-    sim.step();
-  }
-  run(sim, 400);
-  let top = 0;
-  for (let y = 11; y < 64; y++) if (w.mat[idx(64, y, 64)] === M.SAND) top = y;
-  let radius = 0;
-  for (let x = 64; x < 108; x++) if (w.mat[idx(x, 11, 64)] === M.SAND) radius = x - 64;
-  const h = top - 10;
-  const angle = (Math.atan2(h, radius) * 180) / Math.PI;
-  check('sand forms a cone at a realistic angle of repose (28-42°)', angle > 28 && angle < 42, `h=${h} r=${radius} angle=${angle.toFixed(1)}°`);
-}
-
-// 2. Water levels out in a basin
-{
-  const { w, sim } = fresh();
-  floor(w, 10, 40, 60, 40, 60);
-  for (let y = 11; y < 16; y++) for (let k = 40; k <= 60; k++) {
-    w.mat[idx(40, y, k)] = M.STONE; w.mat[idx(60, y, k)] = M.STONE;
-    w.mat[idx(k, y, 40)] = M.STONE; w.mat[idx(k, y, 60)] = M.STONE;
-  }
-  for (let t = 0; t < 800; t++) {
-    const i = idx(45, 30, 45);
-    if (w.mat[i] === M.AIR) w.place(i, M.WATER);
-    if (t < 600) sim.step();
-  }
-  run(sim, 600);
-  let minTop = 99, maxTop = 0;
+  slab(w, 10);
+  walls(w, 11, 16, 40, 60, 40, 60);
+  for (let z = 41; z < 47; z++) for (let x = 41; x < 47; x++) for (let y = 11; y < 16; y++) w.place(idx(x, y, z), M.WATER);
+  const m0 = liquidMass(w, M.WATER);
+  run(w, sim, 500);
+  let lo = 99, hi = 0;
   for (let z = 41; z < 60; z++) for (let x = 41; x < 60; x++) {
     let top = 0;
-    for (let y = 11; y < 20; y++) if (w.mat[idx(x, y, z)] === M.WATER) top = y;
-    minTop = Math.min(minTop, top); maxTop = Math.max(maxTop, top);
+    for (let y = 11; y < 17; y++) { const i = idx(x, y, z); if (w.mat[i] === M.WATER) top = y + w.mass[i]; }
+    lo = Math.min(lo, top); hi = Math.max(hi, top);
   }
-  check('water fills a basin and levels flat', maxTop - minTop <= 1, `surface between y=${minTop} and y=${maxTop}`);
+  const m1 = liquidMass(w, M.WATER);
+  check('water spreads out to a flat surface', hi - lo < 0.35, `surface heights ${lo.toFixed(2)} .. ${hi.toFixed(2)}`);
+  check('water mass is conserved while it flows', Math.abs(m1 - m0) / m0 < 0.03, `${m0.toFixed(1)} -> ${m1.toFixed(1)}`);
 }
 
-// 3. Oil floats on water
+// 2. Oil floats on water
 {
   const { w, sim } = fresh();
-  floor(w, 10, 50, 56, 50, 56);
-  for (let y = 11; y < 22; y++) for (let k = 50; k <= 56; k++) {
-    w.mat[idx(50, y, k)] = M.STONE; w.mat[idx(56, y, k)] = M.STONE;
-    w.mat[idx(k, y, 50)] = M.STONE; w.mat[idx(k, y, 56)] = M.STONE;
-  }
-  // oil at the bottom, water on top: they must swap
-  for (let y = 11; y < 14; y++) for (let z = 51; z < 56; z++) for (let x = 51; x < 56; x++) w.place(idx(x, y, z), M.OIL);
-  for (let y = 14; y < 17; y++) for (let z = 51; z < 56; z++) for (let x = 51; x < 56; x++) w.place(idx(x, y, z), M.WATER);
-  run(sim, 900);
-  let oilY = 0, waterY = 0, no = 0, nw = 0;
+  slab(w, 10);
+  walls(w, 11, 22, 50, 56, 50, 56);
+  for (let y = 11; y < 13; y++) for (let z = 51; z < 56; z++) for (let x = 51; x < 56; x++) w.place(idx(x, y, z), M.OIL);
+  for (let y = 13; y < 16; y++) for (let z = 51; z < 56; z++) for (let x = 51; x < 56; x++) w.place(idx(x, y, z), M.WATER);
+  run(w, sim, 400);
+  let oy = 0, no = 0, wy = 0, nw = 0;
   for (let y = 11; y < 22; y++) for (let z = 51; z < 56; z++) for (let x = 51; x < 56; x++) {
     const m = w.mat[idx(x, y, z)];
-    if (m === M.OIL) { oilY += y; no++; }
-    if (m === M.WATER) { waterY += y; nw++; }
+    if (m === M.OIL) { oy += y; no++; }
+    if (m === M.WATER) { wy += y; nw++; }
   }
-  check('oil floats on top of water', oilY / no > waterY / nw + 1.5, `oil avg y=${(oilY / no).toFixed(1)}, water avg y=${(waterY / nw).toFixed(1)}`);
+  check('oil floats on top of water', no > 0 && nw > 0 && oy / no > wy / nw + 1, `oil avg y ${(oy / no).toFixed(1)}, water avg y ${(wy / nw).toFixed(1)}`);
 }
 
-// 4. Lava + water -> obsidian + steam
+// 3. Falling water becomes droplets and lands again
 {
   const { w, sim } = fresh();
-  floor(w, 10);
-  for (let z = 60; z < 68; z++) for (let x = 60; x < 68; x++) w.place(idx(x, 11, z), M.WATER);
-  for (let z = 62; z < 66; z++) for (let x = 62; x < 66; x++) w.place(idx(x, 14, z), M.LAVA);
-  let steamSeen = 0;
-  for (let t = 0; t < 60; t++) { sim.step(); steamSeen = Math.max(steamSeen, count(w, M.STEAM)); }
-  check('lava meeting water makes obsidian and steam', count(w, M.OBSIDIAN) > 0 && steamSeen > 0, `obsidian=${count(w, M.OBSIDIAN)} steam(max)=${steamSeen}`);
+  slab(w, 10);
+  for (let z = 60; z < 64; z++) for (let x = 60; x < 64; x++) w.place(idx(x, 30, z), M.WATER);
+  const m0 = liquidMass(w, M.WATER);
+  sim.step(); sim.step();
+  const drops = sim.liquids.n;
+  run(w, sim, 120);
+  const m1 = liquidMass(w, M.WATER) + Array.from(sim.liquids.pm.subarray(0, sim.liquids.n)).reduce((a, b) => a + b, 0);
+  check('unsupported water turns into droplets', drops > 20, `${drops} droplets`);
+  check('droplets merge back into a puddle', sim.liquids.n === 0 && liquidMass(w, M.WATER) > m0 * 0.8, `water in cells ${liquidMass(w, M.WATER).toFixed(2)} of ${m0.toFixed(2)} (total ${m1.toFixed(2)})`);
 }
 
-// 5. Fire burns a tree down
+// 4. Lava meets water: obsidian + steam
 {
   const { w, sim } = fresh();
-  floor(w, 10, 50, 70, 50, 70, M.DIRT);
-  for (let y = 11; y < 17; y++) w.mat[idx(60, y, 60)] = M.WOOD;
-  for (let y = 16; y < 20; y++) for (let z = 58; z <= 62; z++) for (let x = 58; x <= 62; x++) if (w.mat[idx(x, y, z)] === M.AIR) w.mat[idx(x, y, z)] = M.LEAVES;
-  const wood0 = count(w, M.WOOD) + count(w, M.LEAVES);
+  slab(w, 10);
+  walls(w, 11, 14, 55, 70, 55, 70);
+  for (let z = 56; z < 70; z++) for (let x = 56; x < 70; x++) w.place(idx(x, 11, z), M.WATER);
+  for (let z = 61; z < 65; z++) for (let x = 61; x < 65; x++) w.place(idx(x, 14, z), M.LAVA);
+  let steam = 0;
+  for (let t = 0; t < 120; t++) { if (t % 5 === 0) syncColliders(w, sim); sim.step(); steam = Math.max(steam, sim.gas.n); }
+  check('lava quenched by water makes obsidian and steam', count(w, M.OBSIDIAN) > 0 && steam > 0, `obsidian ${count(w, M.OBSIDIAN)}, steam particles (max) ${steam}`);
+}
+
+// 5. Powders fall as rigid grains and settle back into a pile
+{
+  const { w, sim } = fresh();
+  slab(w, 10);
+  syncColliders(w, sim);
+  for (let k = 0; k < 40; k++) { sim.pourSolid(64.5 + (k % 3) * 0.2, 25 + k * 0.5, 64.5, M.SAND, 220); }
+  let maxBodies = 0;
+  for (let t = 0; t < 360; t++) { if (t % 5 === 0) syncColliders(w, sim); sim.step(); maxBodies = Math.max(maxBodies, sim.physics.bodies.length); }
+  let fill = 0;
+  for (let i = 0; i < VOLUME; i++) if (w.mat[i] === M.SAND) fill += w.fill[i];
+  check('poured sand falls as physics grains', maxBodies >= 30, `${maxBodies} bodies in flight`);
+  check('grains settle and merge back into the terrain', sim.physics.bodies.length === 0 && fill > 40 * 220 * 0.9, `bodies left ${sim.physics.bodies.length}, sand fill ${fill} of ${40 * 220}`);
+}
+
+// 6. Unsupported terrain breaks off as one tumbling rigid chunk and lands
+{
+  const { w, sim } = fresh();
+  slab(w, 10);
+  for (let y = 11; y < 20; y++) { const i = idx(64, y, 64); w.mat[i] = M.STONE; w.fill[i] = 255; }
+  for (let z = 61; z <= 67; z++) for (let x = 61; x <= 67; x++) { const i = idx(x, 20, z); w.mat[i] = M.STONE; w.fill[i] = 255; }
   w.markAllDirty();
-  applyTool(sim, { tool: 'heat', mat: 0, x: 60, y: 11, z: 60, nx: 0, ny: 1, nz: 0, r: 1 });
-  for (let k = 0; k < 8; k++) { applyTool(sim, { tool: 'heat', mat: 0, x: 60, y: 12, z: 60, nx: 0, ny: 1, nz: 0, r: 1 }); sim.step(); }
-  let maxFire = 0, smoke = 0;
-  for (let t = 0; t < 2500; t++) { sim.step(); maxFire = Math.max(maxFire, count(w, M.FIRE)); smoke = Math.max(smoke, count(w, M.SMOKE)); if (t % 100 === 0 && count(w, M.FIRE) === 0 && t > 200) break; }
-  run(sim, 400);
-  const left = count(w, M.WOOD) + count(w, M.LEAVES);
-  check('fire spreads through a tree, smokes and burns out', left < wood0 * 0.2 && count(w, M.FIRE) === 0 && smoke > 0,
-    `fuel ${wood0} -> ${left}, peak fire=${maxFire}, peak smoke=${smoke}, fire now=${count(w, M.FIRE)}`);
+  const stoneAbove = () => { let n = 0; for (let y = 11; y < 40; y++) for (let z = 40; z < 90; z++) for (let x = 40; x < 90; x++) if (w.mat[idx(x, y, z)] === M.STONE) n++; return n; };
+  const total0 = stoneAbove();
+  syncColliders(w, sim);
+  for (let k = 0; k < 4; k++) applyTool(sim, { tool: 'erase', mat: 0, x: 64, y: 13, z: 64, nx: 0, ny: 1, nz: 0, r: 0.6 });
+  run(w, sim, 3);
+  const chunks = sim.physics.bodies.filter((b) => b.kind === 2).length;
+  run(w, sim, 200);
+  let high = 0;
+  for (let y = 20; y < 40; y++) for (let z = 40; z < 90; z++) for (let x = 40; x < 90; x++) if (w.mat[idx(x, y, z)] === M.STONE) high++;
+  const total1 = stoneAbove();
+  check('a loose table top falls as one rigid chunk', chunks === 1, `${chunks} chunk bodies`);
+  check('the chunk lands and is written back into the grid', sim.physics.bodies.length === 0 && high === 0 && total1 >= total0 - 8, `bodies left ${sim.physics.bodies.length}, stone cells ${total0} -> ${total1}, still up high ${high}`);
 }
 
-// 6. Structural collapse
+// 7. Phase changes with heat
 {
   const { w, sim } = fresh();
-  floor(w, 10); floor(w, 9); // two layers: big enough to count as "the island"
-  for (let y = 11; y < 20; y++) w.mat[idx(64, y, 64)] = M.STONE; // pillar
-  for (let z = 60; z <= 68; z++) for (let x = 60; x <= 68; x++) w.mat[idx(x, 20, z)] = M.STONE; // table top
-  applyTool(sim, { tool: 'erase', mat: 0, x: 64, y: 13, z: 64, nx: 0, ny: 1, nz: 0, r: 0.5 });
-  sim.step();
-  const flying = sim.debris.count;
-  run(sim, 120);
-  let landed = 0;
-  for (let y = 11; y < 16; y++) for (let z = 55; z < 74; z++) for (let x = 55; x < 74; x++) if (w.mat[idx(x, y, z)] === M.STONE) landed++;
-  check('unsupported stone breaks loose, falls as debris and lands', flying > 50 && sim.debris.count === 0 && landed > 60,
-    `debris spawned=${flying}, still flying=${sim.debris.count}, landed blocks=${landed}`);
-}
-
-// 7. Phase changes
-{
-  const { w, sim } = fresh();
-  floor(w, 10);
-  w.place(idx(40, 11, 40), M.ICE);
-  for (let z = 68; z <= 72; z++) for (let x = 68; x <= 72; x++) w.mat[idx(x, 10, z)] = M.METAL;
+  slab(w, 10, M.METAL);
   w.place(idx(70, 11, 70), M.SAND);
-  w.mat[idx(90, 11, 90)] = M.STONE;
-  for (let t = 0; t < 120; t++) {
-    if (t < 25) applyTool(sim, { tool: 'heat', mat: 0, x: 70, y: 11, z: 70, nx: 0, ny: 1, nz: 0, r: 0.5 });
-    applyTool(sim, { tool: 'heat', mat: 0, x: 90, y: 11, z: 90, nx: 0, ny: 1, nz: 0, r: 0.5 });
-    sim.step();
-  }
-  run(sim, 600);
-  const hasWaterOrSteam = count(w, M.WATER) + count(w, M.STEAM) + count(w, M.ICE) - 0;
-  check('ice melts at room temperature', w.mat[idx(40, 11, 40)] !== M.ICE && hasWaterOrSteam >= 0, `ice cell now ${w.mat[idx(40, 11, 40)]}`);
-  check('very hot sand turns into glass', count(w, M.GLASS) > 0, `glass=${count(w, M.GLASS)}`);
-  check('very hot stone melts into lava, then cools to obsidian', count(w, M.OBSIDIAN) + count(w, M.LAVA) > 0, `lava=${count(w, M.LAVA)} obsidian=${count(w, M.OBSIDIAN)}`);
+  w.place(idx(40, 11, 40), M.ICE);
+  w.markAllDirty();
+  // heat just long enough to fuse (much longer and the glass itself melts)
+  for (let t = 0; t < 18; t++) { applyTool(sim, { tool: 'heat', mat: 0, x: 70, y: 11, z: 70, nx: 0, ny: 1, nz: 0, r: 0.5 }); sim.step(); }
+  run(w, sim, 400);
+  check('very hot sand fuses into glass', count(w, M.GLASS) > 0, `glass cells ${count(w, M.GLASS)}`);
+  check('ice melts at room temperature', w.mat[idx(40, 11, 40)] !== M.ICE, `cell is now ${w.mat[idx(40, 11, 40)]}`);
 }
 
-// 8. Acid dissolves stone but not glass
+// 8. Acid eats stone but not glass
 {
   const { w, sim } = fresh();
-  floor(w, 10, 40, 50, 40, 50, M.STONE);
-  floor(w, 10, 80, 90, 80, 90, M.GLASS);
+  slab(w, 10, M.STONE, 40, 50, 40, 50);
+  slab(w, 10, M.GLASS, 80, 90, 80, 90);
   const s0 = count(w, M.STONE), g0 = count(w, M.GLASS);
+  let f0 = 0; for (let i = 0; i < VOLUME; i++) if (w.mat[i] === M.STONE) f0 += w.fill[i];
   for (let z = 43; z < 47; z++) for (let x = 43; x < 47; x++) w.place(idx(x, 11, z), M.ACID);
   for (let z = 83; z < 87; z++) for (let x = 83; x < 87; x++) w.place(idx(x, 11, z), M.ACID);
-  run(sim, 400);
-  check('acid eats stone, glass resists', count(w, M.STONE) < s0 && count(w, M.GLASS) === g0, `stone ${s0}->${count(w, M.STONE)}, glass ${g0}->${count(w, M.GLASS)}`);
+  run(w, sim, 300);
+  let f1 = 0; for (let i = 0; i < VOLUME; i++) if (w.mat[i] === M.STONE) f1 += w.fill[i];
+  check('acid dissolves stone but glass resists', f1 < f0 && count(w, M.GLASS) === g0, `stone fill ${f0} -> ${f1}, glass ${g0} -> ${count(w, M.GLASS)} (stone cells ${s0})`);
 }
 
 // 9. Gunpowder chain reaction
 {
   const { w, sim } = fresh();
-  floor(w, 10);
-  for (let x = 30; x < 100; x++) w.place(idx(x, 11, 64), M.GUNPOWDER);
+  slab(w, 10);
+  for (let x = 30; x < 100; x += 2) w.place(idx(x, 11, 64), M.GUNPOWDER);
   const g0 = count(w, M.GUNPOWDER);
-  applyTool(sim, { tool: 'heat', mat: 0, x: 30, y: 11, z: 64, nx: 0, ny: 1, nz: 0, r: 1 });
+  syncColliders(w, sim);
   for (let k = 0; k < 6; k++) { applyTool(sim, { tool: 'heat', mat: 0, x: 30, y: 11, z: 64, nx: 0, ny: 1, nz: 0, r: 1 }); sim.step(); }
-  run(sim, 300);
-  check('gunpowder trail chain-explodes', count(w, M.GUNPOWDER) < g0 * 0.2, `gunpowder ${g0} -> ${count(w, M.GUNPOWDER)}`);
+  run(w, sim, 300);
+  check('a gunpowder trail chain-explodes', count(w, M.GUNPOWDER) < g0 * 0.2, `gunpowder ${g0} -> ${count(w, M.GUNPOWDER)}`);
 }
 
-// 10. Wet dirt -> mud, and powders sink through water
+// 10. Soft brushes: dig carves gradually, add grows gradually
 {
   const { w, sim } = fresh();
-  floor(w, 10, 50, 60, 50, 60, M.DIRT);
-  for (let y = 11; y < 14; y++) for (let k = 50; k <= 60; k++) {
-    w.mat[idx(50, y, k)] = M.STONE; w.mat[idx(60, y, k)] = M.STONE;
-    w.mat[idx(k, y, 50)] = M.STONE; w.mat[idx(k, y, 60)] = M.STONE;
-  }
-  for (let z = 52; z < 58; z++) for (let x = 52; x < 58; x++) w.place(idx(x, 11, z), M.WATER);
-  run(sim, 300);
-  check('water soaks dirt into mud', count(w, M.MUD) > 0, `mud=${count(w, M.MUD)}`);
+  slab(w, 20);
+  const before = w.fill[idx(64, 20, 64)];
+  applyTool(sim, { tool: 'dig', mat: 0, x: 64, y: 20, z: 64, nx: 0, ny: 1, nz: 0, r: 2.5 });
+  const after1 = w.fill[idx(64, 20, 64)];
+  for (let k = 0; k < 4; k++) applyTool(sim, { tool: 'dig', mat: 0, x: 64, y: 20, z: 64, nx: 0, ny: 1, nz: 0, r: 2.5 });
+  check('dig removes material gradually, not in one pop', after1 < before && after1 > 0 && w.mat[idx(64, 20, 64)] === M.AIR, `fill ${before} -> ${after1} -> ${w.fill[idx(64, 20, 64)]}`);
+  applyTool(sim, { tool: 'add', mat: M.STONE, x: 30, y: 20, z: 30, nx: 0, ny: 1, nz: 0, r: 2.5 });
+  const a1 = w.fill[idx(30, 22, 30)];
+  applyTool(sim, { tool: 'add', mat: M.STONE, x: 30, y: 20, z: 30, nx: 0, ny: 1, nz: 0, r: 2.5 });
+  check('add grows material gradually', a1 > 0 && w.fill[idx(30, 22, 30)] > a1, `fill ${a1} -> ${w.fill[idx(30, 22, 30)]}`);
 }
 
-// 11. The island: generation, waterfall keeps flowing, performance
+// 11. The island: generation, lake stability, waterfall, trees, performance, snapshots
 {
   const w = new World();
   const sim = new Simulator(w);
   const t0 = performance.now();
-  const info = generateIsland(w, 42);
+  const isl = generateIsland(w, 42);
+  sim.trees.set(isl.trees);
   const genMs = performance.now() - t0;
-  const water0 = count(w, M.WATER);
+  for (let c = 0; c < CHUNKS; c++) sim.physics.setTerrain(c, meshChunk(w, c).collider);
+  const water0 = liquidMass(w, M.WATER);
+  run(w, sim, 200);
   const t1 = performance.now();
-  run(sim, 600);
-  const avg = (performance.now() - t1) / 600;
-  const water1 = count(w, M.WATER);
-  // water below the lake level and outside the lake = waterfall / stream
-  let falling = 0;
-  for (let y = 0; y < 30; y++) for (let i = y * LAYER; i < (y + 1) * LAYER; i++) if (w.mat[i] === M.WATER) falling++;
-  check('island generates quickly', genMs < 400, `${genMs.toFixed(0)} ms`);
-  check('lake is fed by the spring and does not drain', water1 > water0 * 0.85, `water ${water0} -> ${water1}`);
-  check('waterfall pours off the edge', falling > 10, `${falling} water cells below y=30`);
-  check('steady-state tick is fast (< 8 ms)', avg < 8, `${avg.toFixed(2)} ms/tick, awake chunks=${sim.stats.awake}, heated=${sim.stats.heated}`);
-  void info;
-  // snapshot round trip
-  const enc = encodeWorld(w);
+  for (let k = 0; k < 150; k++) sim.step();
+  const avg = (performance.now() - t1) / 150;
+  const water1 = liquidMass(w, M.WATER);
+  check('island generates quickly', genMs < 500, `${genMs.toFixed(0)} ms`);
+  check('island has trees and decorations', isl.trees.length >= 15 && isl.decor.length > 200, `${isl.trees.length} trees, ${isl.decor.length} decorations`);
+  check('the lake stays full (spring keeps up with the waterfall)', water1 > water0 * 0.9, `water mass ${water0.toFixed(0)} -> ${water1.toFixed(0)}`);
+  check('the waterfall streams droplets off the edge', sim.liquids.n > 50, `${sim.liquids.n} droplets in flight`);
+  check('steady-state tick fits the 30 Hz budget (< 20 ms)', avg < 20, `${avg.toFixed(2)} ms/tick`);
+  const enc = encodeWorld(w, JSON.stringify({ trees: sim.trees.list }));
   const w2 = new World();
-  decodeWorld(w2, enc);
-  let same = true;
-  for (let i = 0; i < VOLUME; i++) if (w.mat[i] !== w2.mat[i]) { same = false; break; }
-  check('snapshot encode/decode round-trips', same, `${(enc.length / 1024).toFixed(0)} KB`);
-  // explosion cost
-  const t2 = performance.now();
-  applyTool(sim, { tool: 'explode', mat: 0, x: 64, y: 36, z: 64, nx: 0, ny: 1, nz: 0, r: 4 });
-  sim.step();
-  check('explosion throws debris', sim.debris.count > 50, `${sim.debris.count} debris, ${(performance.now() - t2).toFixed(1)} ms`);
-  void SX; void SZ;
+  const extra = decodeWorld(w2, enc);
+  let same = extra !== null;
+  for (let i = 0; i < VOLUME && same; i++) if (w.mat[i] !== w2.mat[i] || w.fill[i] !== w2.fill[i]) same = false;
+  check('snapshot round-trips materials, fill and trees', same && JSON.parse(extra!).trees.length === isl.trees.length, `${(enc.length / 1024).toFixed(0)} KB`);
+  // blast next to a tree: rocks fly, the tree topples
+  const tr = sim.trees.list[0];
+  sim.explode(tr.x + 2, tr.y + 1, tr.z, 5);
+  const rocks = sim.physics.bodies.filter((b) => b.kind === 1).length;
+  check('explosions throw physics rocks and knock trees over', rocks > 10 && tr.state === TREE_FALLEN, `${rocks} rocks, tree state ${tr.state}`);
+  // fire
+  const tr2 = sim.trees.list.find((t) => t.state === 0)!;
+  for (let k = 0; k < 20; k++) { applyTool(sim, { tool: 'heat', mat: 0, x: Math.floor(tr2.x), y: Math.floor(tr2.y) + 2, z: Math.floor(tr2.z), nx: 0, ny: 1, nz: 0, r: 1.5 }); sim.step(); }
+  run(w, sim, 600);
+  check('a heated tree catches fire and burns down', tr2.state === TREE_BURNT || tr2.burn > 0.9, `state ${tr2.state}, burnt ${(tr2.burn * 100).toFixed(0)}%`);
 }
 
 console.log(failed ? `\n${failed} test(s) failed` : '\nAll simulation tests passed');

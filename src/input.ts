@@ -24,7 +24,7 @@ export function brushRadius(brush: number) {
 }
 
 /** Amanatides & Woo voxel traversal. skipLiquids: dig passes through water. */
-export function raycastVoxels(mats: Uint8Array, origin: THREE.Vector3, dir: THREE.Vector3, skipLiquids: boolean, maxDist = 900): Hit | null {
+export function raycastVoxels(mats: Uint8Array, fills: Uint8Array, origin: THREE.Vector3, dir: THREE.Vector3, skipLiquids: boolean, maxDist = 900): Hit | null {
   // clip the ray to the grid box first
   let tmin = 0, tmax = maxDist;
   const o = [origin.x, origin.y, origin.z], d = [dir.x, dir.y, dir.z], size = [SX, SY, SZ];
@@ -58,10 +58,12 @@ export function raycastVoxels(mats: Uint8Array, origin: THREE.Vector3, dir: THRE
   let t = start;
   for (let k = 0; k < 600; k++) {
     if (x < 0 || y < 0 || z < 0 || x >= SX || y >= SY || z >= SZ) return null;
-    const m = mats[x + z * SX + y * LAYER];
+    const ci = x + z * SX + y * LAYER;
+    const m = mats[ci];
     if (m !== 0) {
       const st = T_STATE[m];
-      const pass = st === State.GAS || (skipLiquids && st === State.LIQUID);
+      // the low poly surface sits at half fill: thinner cells are "air" to the cursor
+      const pass = st === State.GAS || (st === State.LIQUID ? skipLiquids || fills[ci] < 90 : fills[ci] < 110);
       if (!pass) return { x, y, z, nx, ny, nz, dist: t };
     }
     if (tmx < tmy && tmx < tmz) { x += stepX; t = start + tmx; tmx += tdx; nx = -stepX; ny = 0; nz = 0; }
@@ -90,12 +92,14 @@ export class ToolInput {
   private dom: HTMLElement;
   private rig: CameraRig;
   private mats: Uint8Array;
+  private fills: Uint8Array;
   private state: ToolState;
 
-  constructor(dom: HTMLElement, rig: CameraRig, mats: Uint8Array, state: ToolState) {
+  constructor(dom: HTMLElement, rig: CameraRig, mats: Uint8Array, fills: Uint8Array, state: ToolState) {
     this.dom = dom;
     this.rig = rig;
     this.mats = mats;
+    this.fills = fills;
     this.state = state;
     dom.addEventListener('pointermove', (e) => this.move(e));
     dom.addEventListener('pointerdown', (e) => this.down(e));
@@ -166,7 +170,7 @@ export class ToolInput {
     if (!this.overCanvas && !this.painting) { this.hit = null; return; }
     this.raycaster.setFromCamera(this.mouse, this.rig.camera);
     const ray = this.raycaster.ray;
-    this.hit = raycastVoxels(this.mats, ray.origin, ray.direction, this.state.tool === 'dig');
+    this.hit = raycastVoxels(this.mats, this.fills, ray.origin, ray.direction, this.state.tool === 'dig');
   }
 
   private apply(h: Hit) {

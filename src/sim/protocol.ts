@@ -1,6 +1,8 @@
 // Messages between the main thread and the simulation worker.
 
+import type { DecorSpec } from './generate.ts';
 import type { ChunkMesh } from './mesher.ts';
+import type { ChunkSpawn } from './physics.ts';
 import type { SimEvent } from './world.ts';
 
 export type ToolName = 'add' | 'erase' | 'dig' | 'heat' | 'cool' | 'explode' | 'pour' | 'inspect';
@@ -13,20 +15,37 @@ export interface ToolApply {
   r: number; // brush radius in cells
 }
 
+export interface IslandMsgInfo {
+  center: number[];
+  lake: number[];
+  mountain: number[];
+  waterfall: number[];
+  cave: number[];
+}
+
+export interface FrameStats {
+  tps: number; tickMs: number; meshMs: number; liquidMs: number; physicsMs: number;
+  awake: number; heated: number; bodies: number; drops: number; gas: number; fire: number; flow: number;
+}
+
 export type ToMain =
   | { t: 'progress'; p: number; label: string }
-  | { t: 'ready'; seed: number; info: { center: number[]; lake: number[]; mountain: number[]; waterfall: number[]; cave: number[] } | null }
+  | { t: 'ready'; seed: number; info: IslandMsgInfo | null; decor: DecorSpec[] }
   | { t: 'chunks'; list: ChunkMesh[]; full: boolean }
   | {
     t: 'frame';
-    debris: Float32Array;
-    gas: Float32Array;
+    tick: number;
+    bodies: Float32Array; // 12 per body
+    drops: Float32Array; // 8 per droplet
+    gas: Float32Array; // 9 per gas particle
+    trees: Float32Array; // 10 per tree
+    newChunks: ChunkSpawn[];
     events: SimEvent[];
     lights: number[]; // x,y,z,intensity,fire * n
-    falls: Float32Array; // sampled free-falling water cells (x,y,z)
-    stats: { tps: number; tickMs: number; meshMs: number; awake: number; heated: number; debris: number; fire: number; water: number };
+    simTime: number;
+    stats: FrameStats;
   }
-  | { t: 'inspect'; mat: number; temp: number; x: number; y: number; z: number; life: number }
+  | { t: 'inspect'; mat: number; temp: number; x: number; y: number; z: number; life: number; amount: number }
   | { t: 'saved'; data: Uint8Array }
   | { t: 'undoState'; depth: number }
   | { t: 'toast'; text: string };
