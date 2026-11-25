@@ -101,8 +101,12 @@ function meshDirty(budgetMs: number) {
   }
 }
 
+/** falling water positions (for spray / mist), refreshed by gasList() */
+let falls: number[] = [];
+
 function gasList(): Float32Array {
   const out: number[] = [];
+  falls = [];
   const mat = world.mat, life = world.life;
   for (let c = 0; c < CHUNKS; c++) {
     if (!world.awake[c]) continue;
@@ -112,6 +116,10 @@ function gasList(): Float32Array {
         const row = z * SX + y * LAYER;
         for (let x = ox; x < ox + CS; x++) {
           const m = mat[row + x];
+          if (m === M.WATER) {
+            if (y > 0 && falls.length < 900 && mat[row + x - LAYER] === M.AIR && (x * 7 + z * 13 + y) % 3 === 0) falls.push(x + 0.5, y + 0.5, z + 0.5);
+            continue;
+          }
           if (m !== M.FIRE && m !== M.SMOKE && m !== M.STEAM) continue;
           const kind = m === M.FIRE ? 0 : m === M.SMOKE ? 1 : 2;
           const maxLife = m === M.FIRE ? 30 : MATERIALS[m].life[1];
@@ -153,15 +161,16 @@ function lightClusters(): { lights: number[]; fire: number } {
 function postFrame() {
   const debris = sim.debris.pack();
   const gas = gasList();
+  const fallArr = new Float32Array(falls);
   const { lights, fire } = lightClusters();
   const events = world.events.splice(0, world.events.length);
   post({
-    t: 'frame', debris, gas, events, lights,
+    t: 'frame', debris, gas, events, lights, falls: fallArr,
     stats: {
       tps, tickMs: tickMsAvg, meshMs: meshMsAvg, awake: sim.stats.awake, heated: sim.stats.heated,
       debris: sim.debris.count, fire, water: 0,
     },
-  }, [debris.buffer, gas.buffer]);
+  }, [debris.buffer, gas.buffer, fallArr.buffer]);
 }
 
 function pushUndo() {

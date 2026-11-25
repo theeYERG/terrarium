@@ -104,6 +104,9 @@ export class ToolInput {
     dom.addEventListener('pointerleave', () => { this.overCanvas = false; });
     dom.addEventListener('pointerenter', () => { this.overCanvas = true; });
     dom.addEventListener('contextmenu', (e) => e.preventDefault());
+    dom.style.cursor = 'crosshair';
+    dom.addEventListener('pointerdown', (e) => { if (e.button === 1 || e.button === 2) dom.style.cursor = 'grabbing'; });
+    window.addEventListener('pointerup', () => { dom.style.cursor = 'crosshair'; });
     // We own the wheel: zoom, or brush size with Shift / Ctrl / Alt.
     window.addEventListener('wheel', (e) => {
       if (e.target !== dom) return;
@@ -215,9 +218,9 @@ export class ToolInput {
       }
       this.lastApplied = { ...h };
       this.lastApplyTime = now;
-    } else if (now - this.lastApplyTime > (tool === 'add' ? 160 : 110)) {
-      // holding still keeps painting (digs deeper / builds up)
-      this.applyNow(now);
+    } else if (tool !== 'add' || T_STATE[this.state.mat] !== State.SOLID) {
+      // holding still keeps digging / pouring; solid blocks only paint while the cursor moves
+      if (now - this.lastApplyTime > (tool === 'add' ? 160 : 110)) this.applyNow(now);
     }
   }
 }

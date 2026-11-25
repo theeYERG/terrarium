@@ -356,6 +356,15 @@ export class UI {
   showPaused(p: boolean) {
     this.pauseBtn.innerHTML = ICONS[p ? 'play' : 'pause'];
     this.pauseBtn.classList.toggle('on', p);
+    let pill = document.getElementById('paused-pill');
+    if (!pill) {
+      pill = document.createElement('div');
+      pill.id = 'paused-pill';
+      pill.className = 'glass';
+      pill.innerHTML = '<span></span>Paused · <kbd>Space</kbd> to resume · <kbd>N</kbd> to step';
+      this.hud.appendChild(pill);
+    }
+    pill.classList.toggle('show', p);
   }
   showSpeed(s: number) {
     this.speedBtn.innerHTML = `<span class="txt">${s < 1 ? s.toString().replace(/^0/, '') : s}×</span>`;

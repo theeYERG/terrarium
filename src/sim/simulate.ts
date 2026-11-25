@@ -654,7 +654,10 @@ export class Simulator {
           const i = x + z * SX + y * LAYER;
           const m = mat[i];
           const d = dist / r;
-          if (dist > R && m !== M.GUNPOWDER) continue;
+          if (dist > R && m !== M.GUNPOWDER) {
+            if (m === M.GRASS && dist < RG && rng.next() < 0.7) w.set(i, M.DIRT); // scorched rim
+            continue;
+          }
           if (m === M.GUNPOWDER) {
             // nearby powder isn't blown away, it goes off too: chain reaction
             w.temp[i] = Math.max(w.temp[i], 450);

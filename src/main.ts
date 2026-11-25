@@ -89,6 +89,8 @@ let inspectInfo: { mat: number; temp: number; x: number; y: number; z: number } 
 let lastInspectSend = 0;
 let screenX = 0, screenY = 0;
 let wantShot = false;
+let falls: Float32Array = new Float32Array(0);
+let mistAcc = 0;
 
 const ui = new UI({
   setTool(t) { state.tool = t; ui.showTool(t); sound.click(); },
@@ -177,7 +179,11 @@ canvas.addEventListener('pointermove', (e) => { screenX = e.clientX; screenY = e
 function feedback(a: ToolApply) {
   const st = T_STATE[a.mat];
   switch (a.tool) {
-    case 'add': sound.place(st === State.LIQUID); break;
+    case 'add': {
+      sound.place(st === State.LIQUID);
+      if (st === State.SOLID || st === State.POWDER) particles.dust(a.x + 0.5 + a.nx, a.y + 0.5 + a.ny, a.z + 0.5 + a.nz, a.mat);
+      break;
+    }
     case 'erase': case 'dig': {
       sound.dig();
       const m = chunks.matAt(a.x, a.y, a.z);
@@ -226,6 +232,7 @@ worker.onmessage = (ev: MessageEvent<ToMain>) => {
       debris.set(msg.debris);
       gas.set(msg.gas);
       glow.set(msg.lights);
+      falls = msg.falls;
       Object.assign(stats, msg.stats);
       for (const e of msg.events) handleEvent(e);
       break;
@@ -357,11 +364,22 @@ function frame() {
   for (const l of glow.lights) {
     if (l.intensity > 6 && Math.random() < dt * 1.5 * (l.intensity / 32)) particles.ember(l.position.x, l.position.y, l.position.z);
   }
+  // spray drifting off waterfalls and pours
+  const nf = falls.length / 3;
+  if (nf > 0) {
+    mistAcc += dt * Math.min(40, 6 + nf * 0.5);
+    while (mistAcc >= 1) {
+      mistAcc -= 1;
+      const k = Math.floor(Math.random() * nf) * 3;
+      particles.mist(falls[k], falls[k + 1], falls[k + 2], night);
+    }
+  }
   particles.update(dt);
   debris.update(dt, elapsed);
   sound.setFire(stats.fire);
   sound.setDay(sky.dayFactor);
 
+  post.closeness = THREE.MathUtils.smoothstep(rig.camera.position.distanceTo(rig.controls.target), 35, 120);
   post.render(dt);
   if (wantShot) {
     wantShot = false;

@@ -277,6 +277,14 @@ export class Particles {
     }
   }
 
+  /** soft spray drifting off falling water */
+  mist(x: number, y: number, z: number, night: number) {
+    const R = Math.random;
+    const b = 0.95 - night * 0.6;
+    this.puffs.spawn(x + (R() - 0.5) * 1.5, y, z + (R() - 0.5) * 1.5, (R() - 0.5) * 1.2, -1 - R() * 2, (R() - 0.5) * 1.2,
+      b, b, b * 1.04, 0.16, 1.4 + R() * 1.4, 1.2 + R() * 1.2, -0.5, 1.6);
+  }
+
   ember(x: number, y: number, z: number) {
     const R = Math.random;
     this.sparks.spawn(x + (R() - 0.5) * 3, y + R() * 2, z + (R() - 0.5) * 3, (R() - 0.5) * 1.5, 2 + R() * 3, (R() - 0.5) * 1.5,

@@ -26,7 +26,7 @@ const TiltShift = (horizontal: boolean) => ({
     varying vec2 vUv;
     void main() {
       float d = abs(vUv.y - uFocus);
-      float r = smoothstep(0.14, 0.55, d) * 3.2 * uAmount;
+      float r = smoothstep(0.16, 0.6, d) * 2.4 * uAmount;
       vec2 dir = ${horizontal ? 'vec2(uTexel.x, 0.0)' : 'vec2(0.0, uTexel.y)'} * r;
       vec4 sum = texture2D(tDiffuse, vUv) * 0.2270270270;
       sum += texture2D(tDiffuse, vUv + dir * 1.3846153846) * 0.3162162162;
@@ -47,9 +47,11 @@ const Sanitize = {
   fragmentShader: /* glsl */ `
     uniform sampler2D tDiffuse;
     varying vec2 vUv;
+    // exponent bits all set => NaN or Inf (bit test survives fast-math compilers)
+    bool bad(float x) { return (floatBitsToUint(x) & 0x7f800000u) == 0x7f800000u; }
     void main() {
       vec4 c = texture2D(tDiffuse, vUv);
-      if (any(isnan(c)) || any(isinf(c))) c = vec4(0.0, 0.0, 0.0, 1.0);
+      if (bad(c.r) || bad(c.g) || bad(c.b) || bad(c.a)) c = vec4(0.0, 0.0, 0.0, 1.0);
       gl_FragColor = min(c, vec4(64.0));
     }`,
 };
@@ -86,8 +88,11 @@ export class PostFX {
     for (const p of [this.tiltH, this.tiltV]) p.uniforms.uTexel.value.set(1 / (w * pr), 1 / (h * pr));
   }
 
+  /** 0..1: how "miniature" the current view is (fades the effect out for close-ups). */
+  closeness = 1;
+
   render(dt: number) {
-    const target = this.tiltShift ? 1 : 0;
+    const target = this.tiltShift ? this.closeness : 0;
     this.tiltAmount += (target - this.tiltAmount) * Math.min(1, dt * 5);
     const on = this.tiltAmount > 0.01;
     this.tiltH.enabled = on;

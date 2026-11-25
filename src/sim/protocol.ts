@@ -22,7 +22,8 @@ export type ToMain =
     debris: Float32Array;
     gas: Float32Array;
     events: SimEvent[];
-    lights: number[]; // x,y,z,intensity * n
+    lights: number[]; // x,y,z,intensity,fire * n
+    falls: Float32Array; // sampled free-falling water cells (x,y,z)
     stats: { tps: number; tickMs: number; meshMs: number; awake: number; heated: number; debris: number; fire: number; water: number };
   }
   | { t: 'inspect'; mat: number; temp: number; x: number; y: number; z: number; life: number }

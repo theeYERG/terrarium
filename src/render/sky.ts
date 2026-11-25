@@ -176,7 +176,7 @@ export class SkyRig {
     u.uMoon.value.copy(moonDir);
     u.uSunCol.value.copy(sunCol).multiplyScalar(day * 0.8 + 0.05);
     u.uNight.value = 1 - day;
-    this.starMat.uniforms.uNight.value = Math.pow(1 - day, 2);
+    this.starMat.uniforms.uNight.value = Math.pow(1 - day, 1.5) * 1.3;
     this.starMat.uniforms.uTime.value = elapsed;
 
     // key light follows the sun by day and the moon by night
@@ -189,14 +189,14 @@ export class SkyRig {
       this.sun.color.copy(sunCol);
       this.sun.intensity = 2.7 * fade;
     } else {
-      this.sun.color.set(0x9db4ff);
-      this.sun.intensity = 0.9 * fade;
+      this.sun.color.set(0xa8bcff);
+      this.sun.intensity = 1.2 * fade;
     }
     this.hemi.color.copy(lerpColor(C(0x2a3a66), C(0xc4ddff), day));
     this.hemi.groundColor.copy(lerpColor(C(0x1a1c28), C(0x8d97a8), day)); // bounce light off the cloud sea
     this.hemi.intensity = 1.0 + 1.3 * day;
     this.fill.position.copy(this.center).add(new THREE.Vector3(-sunDir.x * 120, -90, -sunDir.z * 120));
-    this.fill.intensity = 0.2 + 2.3 * day;
+    this.fill.intensity = 0.45 + 2.05 * day;
     this.fill.color.copy(lerpColor(C(0x6070a0), C(0xd2defa), day));
 
     this.fogColor.copy(hor);

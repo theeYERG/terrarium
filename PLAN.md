@@ -33,45 +33,45 @@
 ## Checklist
 
 ### Phase 1 – voxel data + meshing
-- [ ] material table (density, state, temperatures, flammability, conductivity, colours)
-- [ ] seeded noise + island generator (layers, lake, waterfall + spring, trees, cave, lava pocket, snowy peak, metal veins)
-- [ ] greedy chunk mesher with per-vertex AO, opaque/translucent split
+- [x] material table (density, state, temperatures, flammability, conductivity, colours)
+- [x] seeded noise + island generator (layers, lake, waterfall + spring, trees, cave, lava pocket, snowy peak, metal veins)
+- [x] greedy chunk mesher with per-vertex AO, opaque/translucent split
 
 ### Phase 2 – camera + rendering
-- [ ] chunk meshes with custom shader (palette, variation, AO, glow)
-- [ ] orbit camera: right-drag orbit, middle-drag pan, scroll zoom, damping, limits, anti-clip
-- [ ] sun shadows (PCF soft), hemisphere ambient, fog
+- [x] chunk meshes with custom shader (palette, variation, AO, glow)
+- [x] orbit camera: right-drag orbit, middle-drag pan, scroll zoom, damping, limits, anti-clip
+- [x] sun shadows (PCF soft), hemisphere ambient, fog
 
 ### Phase 3 – simulation core
-- [ ] worker loop with fixed tick rate + speed control + pause
-- [ ] awake-chunk scheduling, randomized order, moved-parity flags
-- [ ] powders with angle of repose, liquids with dispersion + density sinking, gases rise/fade
-- [ ] heat conduction, ambient relaxation, phase changes
+- [x] worker loop with fixed tick rate + speed control + pause
+- [x] awake-chunk scheduling, randomized order, moved-parity flags
+- [x] powders with angle of repose, liquids with dispersion + density sinking, gases rise/fade
+- [x] heat conduction, ambient relaxation, phase changes
 
 ### Phase 4 – materials + reactions
-- [ ] fire (fuel, spread, smoke, embers, burn-out), gunpowder chain explosions
-- [ ] lava + water → obsidian + steam, acid dissolves, grass spread, mud, steam condensing
-- [ ] structural support → collapsing debris
+- [x] fire (fuel, spread, smoke, embers, burn-out), gunpowder chain explosions
+- [x] lava + water → obsidian + steam, acid dissolves, grass spread, mud, steam condensing
+- [x] structural support → collapsing debris
 
 ### Phase 5 – tools
-- [ ] add, erase, dig, heat, cool, explode, pour/rain, inspect
-- [ ] brush preview sphere + face highlight, size with Shift/Ctrl+scroll and [ ]
-- [ ] hold-to-paint with interpolation between positions
+- [x] add, erase, dig, heat, cool, explode, pour/rain, inspect
+- [x] brush preview sphere + face highlight, size with Shift/Ctrl+scroll and [ ]
+- [x] hold-to-paint with interpolation between positions
 
 ### Phase 6 – visual effects
-- [ ] bloom, emissive lava/fire, dynamic point lights near lava/fire clusters
-- [ ] animated translucent water with shimmer, glass/ice transparency
-- [ ] gradient sky, day/night, sun + moon, stars, fog
-- [ ] particles: explosion sparks, splashes, smoke puffs, steam hiss, embers
-- [ ] tilt-shift miniature effect (toggle)
+- [x] bloom, emissive lava/fire, dynamic point lights near lava/fire clusters
+- [x] animated translucent water with shimmer, glass/ice transparency
+- [x] gradient sky, day/night, sun + moon, stars, fog
+- [x] particles: explosion sparks, splashes, smoke puffs, steam hiss, embers
+- [x] tilt-shift miniature effect (toggle)
 
 ### Phase 7 – UI
-- [ ] glassy toolbar with icons + tooltips, material palette, settings panel
-- [ ] shortcuts, pause/speed, FPS counter, undo (20), clear, regenerate w/ seed, save/load, screenshot, cinematic
-- [ ] title + loading screen, sound (WebAudio, muted until first click), touch support
+- [x] glassy toolbar with icons + tooltips, material palette, settings panel
+- [x] shortcuts, pause/speed, FPS counter, undo (20), clear, regenerate w/ seed, save/load, screenshot, cinematic
+- [x] title + loading screen, sound (WebAudio, muted until first click), touch support
 
 ### Phase 8 – polish
-- [ ] Playwright scenario tests + screenshots
-- [ ] profiling (sim tick, remesh, frame time) and optimisation
-- [ ] picky designer review – 10 fixes
-- [ ] GitHub repo, Pages workflow, README
+- [x] Playwright scenario tests + screenshots
+- [x] profiling (sim tick, remesh, frame time) and optimisation
+- [x] picky designer review – 10 fixes
+- [x] GitHub repo, Pages workflow, README
