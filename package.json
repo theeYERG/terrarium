@@ -1,0 +1,25 @@
+{
+  "name": "terrarium",
+  "version": "1.0.0",
+  "description": "A relaxing 3D voxel physics sandbox on a tiny floating island",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test:sim": "node tests/sim.test.ts",
+    "test:e2e": "node tests/e2e.mjs"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "three": "^0.187.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.187.0",
+    "playwright": "^1.65.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.8"
+  }
+}
