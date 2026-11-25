@@ -228,13 +228,13 @@ export class DropRenderer {
   private dummy = new THREE.Object3D();
   private up = new THREE.Vector3(0, 1, 0);
   private dir = new THREE.Vector3();
-  private cWater = new THREE.Color(0x6cc0e0);
+  private cWater = new THREE.Color(0x8fd0ea);
   private cOil = new THREE.Color(0x3a2a18);
   private cAcid = new THREE.Color(0x9cf04a);
 
   constructor(scene: THREE.Scene) {
-    const g = new THREE.OctahedronGeometry(0.22, 0);
-    this.water = new THREE.InstancedMesh(g, flatMat({ transparent: true, opacity: 0.88, roughness: 0.2, envMapIntensity: 0.5 }), 6000);
+    const g = new THREE.IcosahedronGeometry(0.2, 0);
+    this.water = new THREE.InstancedMesh(g, flatMat({ transparent: true, opacity: 0.7, roughness: 0.25, envMapIntensity: 0.4 }), 6000);
     this.lava = new THREE.InstancedMesh(g, flatMat({ color: 0xff7020, emissive: 0xff5010, emissiveIntensity: 2.5 }), 2000);
     for (const im of [this.water, this.lava]) {
       im.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
@@ -260,8 +260,8 @@ export class DropRenderer {
       if (sp > 0.01) this.dummy.quaternion.setFromUnitVectors(this.up, this.dir.set(vx / sp, vy / sp, vz / sp));
       // bigger blobs for heavier drops, gently stretched along their motion
       // fat, overlapping, stretched drops so a stream reads as a ribbon of water
-      const s = 0.75 + Math.min(1.3, d[o + 7] * 11);
-      this.dummy.scale.set(s, s * (1 + Math.min(2.6, sp * 0.11)), s);
+      const s = 0.8 + Math.min(1.2, d[o + 7] * 10);
+      this.dummy.scale.set(s, s * (1 + Math.min(1.6, sp * 0.07)), s);
       this.dummy.updateMatrix();
       const type = d[o + 6];
       if (type === M.LAVA) {
@@ -383,7 +383,7 @@ export class GasRenderer {
         nf++;
       } else {
         const steam = type === 2;
-        const s = (steam ? 0.45 + age * 1.7 : 0.5 + age * 2.0) * easeOut(Math.min(1, age * 2.5 + 0.3));
+        const s = (steam ? 0.4 + age * 1.3 : 0.5 + age * 2.0) * easeOut(Math.min(1, age * 2.5 + 0.3));
         this.dummy.scale.setScalar(s);
         this.dummy.updateMatrix();
         if (ns >= 5000) continue;
@@ -391,7 +391,7 @@ export class GasRenderer {
         const k = ns * 3;
         const g = steam ? 0.97 : 0.36 + (seed % 1) * 0.12;
         sCol[k] = g; sCol[k + 1] = g; sCol[k + 2] = g * (steam ? 1.02 : 1.05);
-        sAl[ns] = (steam ? 0.42 : 0.6) * fadeIn * fadeOut;
+        sAl[ns] = (steam ? 0.28 : 0.55) * fadeIn * fadeOut;
         sEm[ns] = steam ? 0.35 : 0;
         ns++;
       }

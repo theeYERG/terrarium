@@ -1,0 +1,15 @@
+import { chromium } from 'playwright';
+const browser = await chromium.launch({ channel: 'chrome', headless: true, args: ['--use-angle=d3d11', '--enable-gpu'] });
+const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 }, acceptDownloads: true });
+const page = await ctx.newPage();
+page.on('console', (m) => console.log('[console]', m.type(), m.text().slice(0, 200)));
+await page.goto('http://localhost:5179/');
+await page.waitForFunction(() => window.__terrarium?.ready, null, { timeout: 90000 });
+await page.click('#enter');
+await page.waitForTimeout(1500);
+const t0 = Date.now();
+const dl = page.waitForEvent('download', { timeout: 15000 }).catch((e) => 'ERR ' + e.message);
+await page.keyboard.press('k');
+const d = await dl;
+console.log(typeof d === 'string' ? d : d.suggestedFilename(), Date.now() - t0, 'ms');
+await browser.close();

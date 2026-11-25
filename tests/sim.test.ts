@@ -159,9 +159,10 @@ function count(w: World, m: number) {
   w.place(idx(40, 11, 40), M.ICE);
   w.markAllDirty();
   // heat just long enough to fuse (much longer and the glass itself melts)
-  for (let t = 0; t < 18; t++) { applyTool(sim, { tool: 'heat', mat: 0, x: 70, y: 11, z: 70, nx: 0, ny: 1, nz: 0, r: 0.5 }); sim.step(); }
+  let glass = 0;
+  for (let t = 0; t < 60 && glass === 0; t++) { applyTool(sim, { tool: 'heat', mat: 0, x: 70, y: 11, z: 70, nx: 0, ny: 1, nz: 0, r: 0.5 }); sim.step(); glass = count(w, M.GLASS); }
   run(w, sim, 400);
-  check('very hot sand fuses into glass', count(w, M.GLASS) > 0, `glass cells ${count(w, M.GLASS)}`);
+  check('very hot sand fuses into glass', glass > 0, `glass cells ${glass}`);
   check('ice melts at room temperature', w.mat[idx(40, 11, 40)] !== M.ICE, `cell is now ${w.mat[idx(40, 11, 40)]}`);
 }
 

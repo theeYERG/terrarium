@@ -44,7 +44,7 @@ async function open(viewport, opts = {}) {
   // save -> change -> load
   await page.keyboard.press('Control+s');
   await wait(800);
-  const saved = await page.evaluate(() => (localStorage.getItem('terrarium-save-v1') || '').length);
+  const saved = await page.evaluate(() => (localStorage.getItem('terrarium-save-v2') || '').length);
   const before = await page.evaluate(() => H.count(1));
   await page.evaluate(() => H.apply('explode', 0, 64, H.top(64, 64), 64, 6));
   await wait(2500);

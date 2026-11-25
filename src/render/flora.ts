@@ -179,6 +179,9 @@ export class TreeRenderer {
       t.crownMat.color.setRGB(1, 1, 1).lerp(char, Math.min(1, b * 1.6));
       t.trunkMat.color.setRGB(1, 1, 1).lerp(char, Math.min(1, b * 1.2));
       const crownScale = t.state === TREE_BURNT ? 0 : 1 - Math.max(0, b - 0.35) / 0.65 * 0.95;
+      // the trunk burns down to a short stump
+      const stump = t.state === TREE_BURNT ? 0.32 : 1 - Math.max(0, b - 0.6) / 0.4 * 0.6;
+      t.trunk.scale.y += (stump - t.trunk.scale.y) * Math.min(1, dt * 1.5);
       const cs = t.crown.scale.x + (Math.max(0.001, crownScale) - t.crown.scale.x) * Math.min(1, dt * 4);
       t.crown.scale.setScalar(cs);
       t.crown.visible = cs > 0.01;

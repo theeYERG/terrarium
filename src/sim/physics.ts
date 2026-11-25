@@ -13,7 +13,7 @@ import { GRAIN_RADIUS, rockPoints, rockSize, ROCK_VARIANTS } from './shapes.ts';
 import { SOLID_FILL, World } from './world.ts';
 
 export const KIND_GRAIN = 0, KIND_ROCK = 1, KIND_CHUNK = 2, KIND_TREE = 3;
-export const MAX_GRAINS = 240, MAX_ROCKS = 160, MAX_CHUNKS = 8;
+export const MAX_GRAINS = 180, MAX_ROCKS = 90, MAX_CHUNKS = 6;
 
 const G_TERRAIN = 1, G_GRAIN = 2, G_BODY = 4;
 const groups = (member: number, filter: number) => (member << 16) | filter;
@@ -68,6 +68,8 @@ export class Physics {
     this.w = w;
     this.world = new RAPIER.World({ x: 0, y: -28, z: 0 });
     this.world.timestep = 1 / 30;
+    // debris doesn't need precise stacking: fewer solver iterations is plenty and much cheaper
+    this.world.integrationParameters.numSolverIterations = 2;
   }
 
   reset() {
@@ -115,10 +117,10 @@ export class Physics {
     const r = this.rec(KIND_GRAIN, mat, amount, 0, GRAIN_RADIUS, temp);
     const desc = RAPIER.RigidBodyDesc.dynamic().setTranslation(x, y, z).setLinvel(vx, vy, vz)
       .setAngvel({ x: (Math.random() - 0.5) * 4, y: 0, z: (Math.random() - 0.5) * 4 })
-      .setLinearDamping(0.05).setAngularDamping(0.6).setCcdEnabled(true);
+      .setLinearDamping(0.25).setAngularDamping(4).setCcdEnabled(true);
     const body = this.world.createRigidBody(desc);
     const col = RAPIER.ColliderDesc.ball(GRAIN_RADIUS).setFriction(MATERIALS[mat].state === State.POWDER ? 0.95 : 0.7)
-      .setRestitution(0.12).setDensity(Math.max(0.3, T_DENSITY[mat] / 1000))
+      .setRestitution(0.05).setDensity(Math.max(0.3, T_DENSITY[mat] / 1000))
       .setCollisionGroups(groups(G_GRAIN, G_TERRAIN | G_BODY));
     this.world.createCollider(col, body);
     r.body = body;
@@ -261,9 +263,9 @@ export class Physics {
       const speed = Math.hypot(v.x, v.y, v.z), spin = Math.hypot(av.x, av.y, av.z);
       const restV = b.kind === KIND_CHUNK || b.kind === KIND_TREE ? 0.35 : 0.5;
       if (body.isSleeping() || (speed < restV && spin < 1.2)) b.still += dt; else b.still = 0;
-      const settle = b.kind === KIND_GRAIN ? 0.25 : b.kind === KIND_ROCK ? 0.45 : 1.0;
+      const settle = b.kind === KIND_GRAIN ? 0.2 : b.kind === KIND_ROCK ? 0.35 : 0.9;
       // things that never quite stop (rolling forever, stuck in a liquid) merge anyway eventually
-      const tooOld = b.kind === KIND_GRAIN ? 10 : b.kind === KIND_ROCK ? 16 : 22;
+      const tooOld = b.kind === KIND_GRAIN ? 8 : b.kind === KIND_ROCK ? 10 : 20;
       if (b.kind === KIND_TREE) {
         if (b.still > 1.5 && !body.isSleeping()) body.sleep();
         if (b.still > 1.5 && b.deposited === 0) { b.deposited = 1; this.onTreeSettled(b.shape); }

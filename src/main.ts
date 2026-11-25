@@ -447,7 +447,12 @@ function adapt() {
 }
 
 function takeScreenshot() {
-  canvas.toBlob((blob) => {
+  // grab the frame right after it was drawn into a plain 2D canvas, then encode that
+  const copy = document.createElement('canvas');
+  copy.width = canvas.width;
+  copy.height = canvas.height;
+  copy.getContext('2d')!.drawImage(canvas, 0, 0);
+  copy.toBlob((blob) => {
     if (!blob) return;
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);

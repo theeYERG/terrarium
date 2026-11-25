@@ -205,7 +205,35 @@ function flatSlab() {
 
 function resetAfterJump() {
   sim!.resetDynamics();
-  world.dirty.fill(3);
+}
+
+/** Restore a snapshot and remesh only the chunks that actually differ (undo is usually local). */
+function restore(data: Uint8Array): string | null {
+  const oldMat = world.mat.slice(), oldFill = world.fill.slice(), oldMass = world.mass.slice();
+  const extra = decodeWorld(world, data);
+  if (extra === null) return null;
+  world.dirty.fill(0);
+  for (let c = 0; c < CHUNKS; c++) {
+    const ox = (c % CX) * 16, oz = (Math.floor(c / CX) % CZ) * 16, oy = Math.floor(c / (CX * CZ)) * 16;
+    let changed = false;
+    for (let y = oy; y < oy + 16 && !changed; y++) for (let z = oz; z < oz + 16 && !changed; z++) {
+      const row = ox + z * SX + y * LAYER;
+      for (let i = row; i < row + 16; i++) {
+        if (world.mat[i] !== oldMat[i] || world.fill[i] !== oldFill[i] || Math.abs(world.mass[i] - oldMass[i]) > 0.002) { changed = true; break; }
+      }
+    }
+    if (changed) {
+      // neighbours read one cell across the border, so refresh them too
+      world.dirty[c] = 3;
+      const cx = c % CX, cz = Math.floor(c / CX) % CZ, cy = Math.floor(c / (CX * CZ));
+      for (const [dx, dy, dz] of [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]) {
+        const nx = cx + dx, ny = cy + dy, nz = cz + dz;
+        if (nx < 0 || ny < 0 || nz < 0 || nx >= CX || ny >= 4 || nz >= CZ) continue;
+        world.dirty[nx + nz * CX + ny * CX * CZ] |= 3;
+      }
+    }
+  }
+  return extra;
 }
 
 let frameCounter = 0;
@@ -290,8 +318,9 @@ function handle(msg: ToWorker) {
     case 'undo': {
       const snap = undo.pop();
       if (snap) {
-        restoreExtras(decodeWorld(world, snap));
+        restoreExtras(restore(snap));
         resetAfterJump();
+        meshDirty(400); // show the restored chunks right away
         post({ t: 'ready', seed: world.seed, info: null, decor });
         post({ t: 'toast', text: `Undo (${undo.length} left)` });
       } else post({ t: 'toast', text: 'Nothing to undo' });
@@ -316,9 +345,9 @@ function handle(msg: ToWorker) {
     }
     case 'load': {
       pushUndo();
-      const ex = decodeWorld(world, msg.data);
+      const ex = restore(msg.data);
       if (ex === null) post({ t: 'toast', text: 'Save file is damaged' });
-      else { restoreExtras(ex); resetAfterJump(); post({ t: 'ready', seed: world.seed, info: null, decor }); }
+      else { restoreExtras(ex); resetAfterJump(); meshDirty(400); post({ t: 'ready', seed: world.seed, info: null, decor }); }
       break;
     }
     case 'bench': {

@@ -110,10 +110,10 @@ export class Simulator {
       }
     }
     let heated = 0;
-    // mildly warm chunks conduct every other tick; really hot ones (fire, lava) every tick
+    // each warm chunk conducts every other tick (with a doubled, clamped step), half of them per tick
     for (let c = 0; c < CHUNKS; c++) {
       if (!this.heatMask[c]) continue;
-      if (w.hot[c] < 40 && ((c + w.tick) & 1)) continue;
+      if ((c + w.tick) & 1) continue;
       this.heatChunk(c);
       heated++;
     }
@@ -137,6 +137,16 @@ export class Simulator {
    * stacking into a tower. Returns whatever didn't fit.
    */
   depositFill(x: number, y: number, z: number, m: number, amount: number, temp: number): number {
+    if (amount > 40) {
+      // half in the middle, the rest shared with the four neighbouring columns
+      let rest = this.depositAt(x, y, z, m, amount * 0.5, temp);
+      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) rest += this.depositAt(x + dx, y, z + dz, m, amount * 0.125, temp);
+      return rest > 0.5 ? this.depositAt(x, y, z, m, rest, temp) : 0;
+    }
+    return this.depositAt(x, y, z, m, amount, temp);
+  }
+
+  private depositAt(x: number, y: number, z: number, m: number, amount: number, temp: number): number {
     const w = this.w;
     let left = amount;
     const bx = Math.floor(x), by = Math.floor(y), bz = Math.floor(z);
@@ -340,16 +350,27 @@ export class Simulator {
           const x = ox + lx;
           const m = mat[i];
           const T = temp[i];
+          // fast path: this cell and its neighbours are all sitting at ambient -> nothing to do
+          if (T === a && (x === 0 || temp[i - 1] === a) && (x === SX - 1 || temp[i + 1] === a) &&
+            (z === 0 || temp[i - SX] === a) && (z === SZ - 1 || temp[i + SX] === a) &&
+            (y === 0 || temp[i - LAYER] === a + aDn) && (y === SY - 1 || temp[i + LAYER] === a + aUp)) continue;
           const k = T_COND[m];
-          let sum = 0;
-          if (x > 0) { const n = i - 1; const kn = T_COND[mat[n]]; sum += (kn < k ? kn : k) * (temp[n] - T); }
-          if (x < SX - 1) { const n = i + 1; const kn = T_COND[mat[n]]; sum += (kn < k ? kn : k) * (temp[n] - T); }
-          if (z > 0) { const n = i - SX; const kn = T_COND[mat[n]]; sum += (kn < k ? kn : k) * (temp[n] - T); }
-          if (z < SZ - 1) { const n = i + SX; const kn = T_COND[mat[n]]; sum += (kn < k ? kn : k) * (temp[n] - T); }
-          if (y > 0) { const n = i - LAYER; const kn = T_COND[mat[n]]; sum += (kn < k ? kn : k) * (temp[n] - aDn - T); }
-          if (y < SY - 1) { const n = i + LAYER; const kn = T_COND[mat[n]]; sum += (kn < k ? kn : k) * (temp[n] - aUp - T); }
-          let nt = T + sum * 0.3;
-          nt += (a - nt) * T_RELAX[m];
+          let sum = 0, ws = 0;
+          if (x > 0) { const n = i - 1; const kn = T_COND[mat[n]]; const kk = kn < k ? kn : k; sum += kk * (temp[n] - T); ws += kk; }
+          if (x < SX - 1) { const n = i + 1; const kn = T_COND[mat[n]]; const kk = kn < k ? kn : k; sum += kk * (temp[n] - T); ws += kk; }
+          if (z > 0) { const n = i - SX; const kn = T_COND[mat[n]]; const kk = kn < k ? kn : k; sum += kk * (temp[n] - T); ws += kk; }
+          if (z < SZ - 1) { const n = i + SX; const kn = T_COND[mat[n]]; const kk = kn < k ? kn : k; sum += kk * (temp[n] - T); ws += kk; }
+          if (y > 0) { const n = i - LAYER; const kn = T_COND[mat[n]]; const kk = kn < k ? kn : k; sum += kk * (temp[n] - aDn - T); ws += kk; }
+          if (y < SY - 1) { const n = i + LAYER; const kn = T_COND[mat[n]]; const kk = kn < k ? kn : k; sum += kk * (temp[n] - aUp - T); ws += kk; }
+          // doubled step (runs every other tick); if the neighbours' total weight would
+          // overshoot (good conductors like metal), scale it back so it stays stable
+          let d = sum * 0.6;
+          const wt = ws * 0.6;
+          if (wt > 0.85) d *= 0.85 / wt;
+          let nt = T + d;
+          nt += (a - nt) * Math.min(0.5, T_RELAX[m] * 2);
+          // snap to ambient once it's indistinguishable, so the fast path above kicks in
+          if (nt - a < 0.05 && a - nt < 0.05) nt = a;
           if (m === M.LAVA && (flags[i] & F_SOURCE) && nt < 1200) nt = 1200;
           if (m === M.AIR && nt > 2600) nt = 2600;
           temp[i] = nt;
@@ -505,7 +526,7 @@ export class Simulator {
     const y0 = Math.max(0, Math.floor(cy - RG)), y1 = Math.min(SY - 1, Math.ceil(cy + RG));
     const z0 = Math.max(0, Math.floor(cz - RG)), z1 = Math.min(SZ - 1, Math.ceil(cz + RG));
     let rocks = 0;
-    const maxRocks = Math.min(70, 20 + r * 8);
+    const maxRocks = Math.min(45, 14 + r * 6);
     for (let y = y0; y <= y1; y++) {
       for (let z = z0; z <= z1; z++) {
         for (let x = x0; x <= x1; x++) {

@@ -35,38 +35,38 @@ v2 keeps the voxel grid as the *data* but changes how it is drawn and how things
 ## Phases / checklist
 
 ### 1. Smooth terrain mesh
-- [ ] `fill` field in the world, generator writes smooth fractional surfaces
-- [ ] surface nets mesher (per chunk, dirty-only, in the worker), non-indexed flat triangles
-- [ ] position-seeded vertex jitter, per-face colours, material blending at boundaries, AO
-- [ ] soft-falloff brush for add / dig / erase / explode; raycast uses fill
+- [x] `fill` field in the world, generator writes smooth fractional surfaces
+- [x] surface nets mesher (per chunk, dirty-only, in the worker), non-indexed flat triangles
+- [x] position-seeded vertex jitter, per-face colours, material blending at boundaries, AO
+- [x] soft-falloff brush for add / dig / erase / explode; raycast uses fill
 
 ### 2. Low poly styling
-- [ ] cohesive palette (2–3 shades per material), slope-aware grass/dirt/rock colouring
-- [ ] trees (cone pines, icosphere oaks), chunky rocks, grass tufts / flowers as instanced models
-- [ ] pastel sky, warm soft light, fog
+- [x] cohesive palette (2–3 shades per material), slope-aware grass/dirt/rock colouring
+- [x] trees (cone pines, icosphere oaks), chunky rocks, grass tufts / flowers as instanced models
+- [x] pastel sky, warm soft light, fog
 
 ### 3. Liquid heightfield
-- [ ] per-cell liquid mass + face fluxes (virtual pipes) with per-liquid viscosity
-- [ ] density sorting (oil floats), lava crust → obsidian, lava + water → steam + obsidian, acid
-- [ ] liquid surface mesh: waves, depth colour, fresnel, foam at shores and impacts, faceting
+- [x] per-cell liquid mass + face fluxes (virtual pipes) with per-liquid viscosity
+- [x] density sorting (oil floats), lava crust → obsidian, lava + water → steam + obsidian, acid
+- [x] liquid surface mesh: waves, depth colour, fresnel, foam at shores and impacts, faceting
 
 ### 4. Liquid particles
-- [ ] water leaving a ledge turns into particles; cohesion + XSPH; landing merges into cells
-- [ ] waterfall stream look, splashes + spray, foam where they land
+- [x] water leaving a ledge turns into particles; cohesion + XSPH; landing merges into cells
+- [x] waterfall stream look, splashes + spray, foam where they land
 
 ### 5. Rigid debris (Rapier)
-- [ ] terrain trimesh colliders per chunk, rebuilt with remesh
-- [ ] powder grains: unsupported sand/gravel/snow → bodies → settle → merge (shrink + deposit)
-- [ ] explosion rocks with velocity; tumbling rigid chunks for unsupported terrain; falling trees
+- [x] terrain trimesh colliders per chunk, rebuilt with remesh
+- [x] powder grains: unsupported sand/gravel/snow → bodies → settle → merge (shrink + deposit)
+- [x] explosion rocks with velocity; tumbling rigid chunks for unsupported terrain; falling trees
 
 ### 6. Particle effects
-- [ ] fire / smoke / steam as particles: buoyancy, swirl, eased fade; fire heats + ignites, steam condenses
+- [x] fire / smoke / steam as particles: buoyancy, swirl, eased fade; fire heats + ignites, steam condenses
 
 ### 7. Interpolation & transitions
-- [ ] snapshot interpolation for bodies, extrapolation for particles, eased camera
-- [ ] colour lerp on material change, puffs on state changes, shrink on merge
+- [x] snapshot interpolation for bodies, extrapolation for particles, eased camera
+- [x] colour lerp on material change, puffs on state changes, shrink on merge
 
 ### 8. Polish
-- [ ] profile (sim tick, remesh, physics, render) → steady 60 fps; scale counts down if needed
-- [ ] art-director review: 10 fixes
-- [ ] tests updated, README + screenshots, deploy
+- [x] profile (sim tick, remesh, physics, render) → steady 60 fps; scale counts down if needed
+- [x] art-director review: 10 fixes
+- [x] tests updated, README + screenshots, deploy

@@ -160,7 +160,7 @@ export function meshChunk(world: World, c: number, doTerrain = true): ChunkMesh 
     const m = mat[i];
     if (T_STATE[m] === State.LIQUID) { dens[s] = Math.min(1, mass[i]); continue; }
     // solids next to liquid borrow its level, so the liquid surface ends inside the wall
-    if (IS_TERRAIN[m] && fill[i] > 60) {
+    if (IS_TERRAIN[m]) {
       let best = 0, bm = 0;
       const probe = (j: number) => { const mm = mat[j]; if (T_STATE[mm] === State.LIQUID && mass[j] > best) { best = mass[j]; bm = mm; } };
       if (wx > 0) probe(i - 1);
@@ -333,7 +333,7 @@ export function meshChunk(world: World, c: number, doTerrain = true): ChunkMesh 
     }
     // one colour per face: blend of the three vertex colours + hashed shade + AO + slope rules
     const h = hash3(Math.floor((ox + (ax + bx + cx) / 3) * 3), Math.floor((oy + (ay + by + cy) / 3) * 3), Math.floor((oz + (az + bz + cz) / 3) * 3));
-    const shade = 0.94 + h * 0.12;
+    const shade = 0.955 + h * 0.08;
     const ao = (vao[a] + vao[b] + vao[c2]) / 3;
     const dom = vmat[a] === vmat[b] || vmat[a] === vmat[c2] ? vmat[a] : vmat[b];
     let r = (vcol[a * 3] + vcol[b * 3] + vcol[c2 * 3]) / 3;
@@ -352,9 +352,9 @@ export function meshChunk(world: World, c: number, doTerrain = true): ChunkMesh 
       const t = (steep - 0.3) / 0.7;
       r += (hexR(ROCKFACE[k]) - r) * t; g += (hexG(ROCKFACE[k]) - g) * t; bl += (hexB(ROCKFACE[k]) - bl) * t;
     } else {
-      r += (PAL_R[dom * 3 + k] - PAL_R[dom * 3 + 1]) * 0.8;
-      g += (PAL_G[dom * 3 + k] - PAL_G[dom * 3 + 1]) * 0.8;
-      bl += (PAL_B[dom * 3 + k] - PAL_B[dom * 3 + 1]) * 0.8;
+      r += (PAL_R[dom * 3 + k] - PAL_R[dom * 3 + 1]) * 0.55;
+      g += (PAL_G[dom * 3 + k] - PAL_G[dom * 3 + 1]) * 0.55;
+      bl += (PAL_B[dom * 3 + k] - PAL_B[dom * 3 + 1]) * 0.55;
     }
     const f = shade * ao * (ny < -0.3 ? 0.88 : 1);
     const R = clamp8(r * f), G = clamp8(g * f), B = clamp8(bl * f);

@@ -44,6 +44,10 @@ export class Liquids {
   private out = new Float32Array(VOLUME);
   private scale = new Float32Array(VOLUME);
   private touched: number[] = [];
+  /** faces with a non-zero flux this tick: cell index * 2 + face */
+  private faces: number[] = [];
+  /** liquid cells per chunk, counted in the vertical pass */
+  private liqCount = new Uint16Array(CHUNKS);
   private sizzleCooldown = 0;
   // droplets
   px = new Float32Array(MAX_DROPS); py = new Float32Array(MAX_DROPS); pz = new Float32Array(MAX_DROPS);
@@ -71,7 +75,15 @@ export class Liquids {
     this.activity = 0;
     for (let k = 0; k < nChunks; k++) this.vertical(chunks[k]);
     this.touched.length = 0;
-    for (let k = 0; k < nChunks; k++) this.flux(chunks[k]);
+    this.faces.length = 0;
+    const lc = this.liqCount;
+    for (let k = 0; k < nChunks; k++) {
+      const c = chunks[k];
+      // a chunk's own +x / +z faces can carry flow in from its neighbours, so check those too
+      const cx = c % CX, cz = Math.floor(c / CX) % CZ;
+      if (lc[c] === 0 && (cx === CX - 1 || lc[c + 1] === 0) && (cz === CZ - 1 || lc[c + CX] === 0)) continue;
+      this.flux(c);
+    }
     // per-source scaling so no cell sends more than it has
     const t = this.touched;
     for (let k = 0; k < t.length; k++) {
@@ -79,7 +91,7 @@ export class Liquids {
       const o = this.out[i];
       this.scale[i] = o > w.mass[i] && o > 0 ? w.mass[i] / o : 1;
     }
-    for (let k = 0; k < nChunks; k++) this.apply(chunks[k]);
+    this.applyFaces();
     for (let k = 0; k < t.length; k++) this.out[t[k]] = 0;
     this.stepDrops(1 / 30);
   }
@@ -89,6 +101,7 @@ export class Liquids {
     const w = this.w;
     const { mat, mass, temp, foam } = w;
     const ox = (c % CX) * CS, oz = (Math.floor(c / CX) % CZ) * CS, oy = Math.floor(c / (CX * CZ)) * CS;
+    let liquidCells = 0;
     for (let y = oy; y < oy + CS; y++) {
       for (let z = oz; z < oz + CS; z++) {
         let i = ox + z * SX + y * LAYER;
@@ -96,6 +109,7 @@ export class Liquids {
           const L = mat[i];
           if (foam[i] > 0) foam[i] = foam[i] > 5 ? foam[i] - 5 : 0;
           if (T_STATE[L] !== State.LIQUID) continue;
+          liquidCells++;
           let m = mass[i];
           if (m < 0.012 && !(w.flags[i] & F_SOURCE)) { w.set(i, M.AIR); continue; }
           if (y === 0) { w.set(i, M.AIR); continue; }
@@ -135,6 +149,7 @@ export class Liquids {
         }
       }
     }
+    this.liqCount[c] = liquidCells;
   }
 
   /** Reactions with neighbours. Returns true if the cell is gone. */
@@ -157,7 +172,7 @@ export class Liquids {
           } else {
             w.setFill(n, w.fill[n] - 80);
           }
-          this.hooks.steam(x + 0.5, y + 0.8, z + 0.5, 2);
+          if (w.rng.next() < 0.5) this.hooks.steam(x + 0.5, y + 0.8, z + 0.5, 1);
           temp[i] -= 220;
           if (this.sizzleCooldown === 0) {
             w.event({ t: 'sizzle', x: x + 0.5, y: y + 1, z: z + 0.5 });
@@ -254,24 +269,24 @@ export class Liquids {
             if (f > 0 && !bLiq && ha < MIN_SPREAD[L] && y > 0 && mat[n - LAYER] !== M.AIR) f = 0;
             if (f < 0 && !aLiq && hb < MIN_SPREAD[L] && y > 0 && mat[i - LAYER] !== M.AIR) f = 0;
             arr[i] = f;
-            if (f > 0) { if (out[i] === 0) touched.push(i); out[i] += f; }
-            else if (f < 0) { if (out[n] === 0) touched.push(n); out[n] -= f; }
+            if (f > 0) { if (out[i] === 0) touched.push(i); out[i] += f; this.faces.push(i * 2 + face); }
+            else if (f < 0) { if (out[n] === 0) touched.push(n); out[n] -= f; this.faces.push(i * 2 + face); }
           }
         }
       }
     }
   }
 
-  private apply(c: number) {
+  private applyFaces() {
     const w = this.w;
     const { mat, mass, fluxX, fluxZ, temp } = w;
     const scale = this.scale;
-    const ox = (c % CX) * CS, oz = (Math.floor(c / CX) % CZ) * CS, oy = Math.floor(c / (CX * CZ)) * CS;
-    for (let y = oy; y < oy + CS; y++) {
-      for (let z = oz; z < oz + CS; z++) {
-        let i = ox + z * SX + y * LAYER;
-        for (let x = ox; x < ox + CS; x++, i++) {
-          for (let face = 0; face < 2; face++) {
+    const faces = this.faces;
+    for (let q = 0; q < faces.length; q++) {
+      {
+        {
+          const i = faces[q] >> 1, face = faces[q] & 1;
+          {
             const arr = face === 0 ? fluxX : fluxZ;
             const f = arr[i];
             if (f === 0) continue;
@@ -352,20 +367,24 @@ export class Liquids {
     this.pm[k] = this.pm[l]; this.pt[k] = this.pt[l]; this.ptemp[k] = this.ptemp[l];
   }
 
+  private dropTick = 0;
+
   private stepDrops(dt: number) {
     const w = this.w;
     const n = this.n;
     if (n === 0) return;
+    // cohesion is the expensive part: do it every other tick at double strength
+    const cohesion = (this.dropTick++ & 1) === 0;
     const { px, py, pz, vx, vy, vz } = this;
     // spatial hash for cohesion / XSPH
-    this.hashHead.fill(-1);
+    if (cohesion) this.hashHead.fill(-1);
     const H = (ix: number, iy: number, iz: number) => ((ix * 73856093) ^ (iy * 19349663) ^ (iz * 83492791)) & 16383;
-    for (let k = 0; k < n; k++) {
+    for (let k = 0; k < n && cohesion; k++) {
       const h = H(Math.floor(px[k]), Math.floor(py[k]), Math.floor(pz[k]));
       this.next[k] = this.hashHead[h];
       this.hashHead[h] = k;
     }
-    for (let k = 0; k < n; k++) {
+    for (let k = 0; k < n && cohesion; k++) {
       // cohesion + velocity smoothing with close neighbours keeps streams together
       let ax = 0, ay = 0, az = 0, sx = 0, sy = 0, sz = 0, cnt = 0;
       const ix = Math.floor(px[k]), iy = Math.floor(py[k]), iz = Math.floor(pz[k]);
@@ -389,7 +408,7 @@ export class Liquids {
       }
       if (cnt) {
         const inv = 1 / cnt;
-        vx[k] += ax * dt * 4 + sx * inv * 0.12; vy[k] += ay * dt * 4 + sy * inv * 0.12; vz[k] += az * dt * 4 + sz * inv * 0.12;
+        vx[k] += ax * dt * 8 + sx * inv * 0.22; vy[k] += ay * dt * 8 + sy * inv * 0.22; vz[k] += az * dt * 8 + sz * inv * 0.22;
       }
     }
     for (let k = 0; k < this.n; k++) {

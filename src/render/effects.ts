@@ -135,16 +135,16 @@ export class Particles {
 
   explosion(x: number, y: number, z: number, r: number) {
     const R = Math.random;
-    const n = Math.min(260, 60 + r * 30);
+    const n = Math.min(90, 26 + r * 10);
     for (let i = 0; i < n; i++) {
       const u = R() * 2 - 1, a = R() * Math.PI * 2, s = Math.sqrt(1 - u * u);
-      const sp = 8 + R() * 22 * (r / 4);
+      const sp = 8 + R() * 18 * (r / 4);
       const hot = R();
       this.sparks.spawn(x, y, z, Math.cos(a) * s * sp, Math.abs(u) * sp + 4, Math.sin(a) * s * sp,
-        4, 1.2 + hot * 1.8, 0.2 + hot * 0.4, 1, 0.35 + R() * 0.35, 0.5 + R() * 1.0, 18);
+        1.6 + hot * 0.6, 0.45 + hot * 0.55, 0.08 + hot * 0.12, 0.9, 0.22 + R() * 0.22, 0.45 + R() * 0.8, 18);
     }
-    // flash
-    this.sparks.spawn(x, y, z, 0, 0, 0, 6, 4, 2, 1, r * 4, 0.18, 0, r * 12);
+    // a quick soft flash (fades in 0.15 s)
+    this.sparks.spawn(x, y, z, 0, 0, 0, 1.4, 0.75, 0.3, 0.55, r * 1.6, 0.15, 0, r * 7);
     for (let i = 0; i < Math.min(60, 14 + r * 6); i++) {
       const a = R() * Math.PI * 2;
       const sp = 2 + R() * 4;
@@ -164,12 +164,12 @@ export class Particles {
 
   sizzle(x: number, y: number, z: number) {
     const R = Math.random;
-    for (let i = 0; i < 14; i++) {
-      this.puffs.spawn(x + (R() - 0.5) * 2, y, z + (R() - 0.5) * 2, (R() - 0.5) * 2, 3 + R() * 3, (R() - 0.5) * 2,
-        0.95, 0.97, 1, 0.45, 1.2 + R(), 1.2 + R() * 1.2, -2, 1.6);
+    for (let i = 0; i < 5; i++) {
+      this.puffs.spawn(x + (R() - 0.5) * 2, y, z + (R() - 0.5) * 2, (R() - 0.5) * 2, 2.5 + R() * 2.5, (R() - 0.5) * 2,
+        0.95, 0.97, 1, 0.3, 0.8 + R() * 0.6, 0.9 + R() * 0.8, -2, 1.2);
     }
-    for (let i = 0; i < 8; i++) {
-      this.sparks.spawn(x, y, z, (R() - 0.5) * 6, 3 + R() * 5, (R() - 0.5) * 6, 3, 1.2, 0.3, 1, 0.25, 0.4 + R() * 0.3, 15);
+    for (let i = 0; i < 4; i++) {
+      this.sparks.spawn(x, y, z, (R() - 0.5) * 6, 3 + R() * 5, (R() - 0.5) * 6, 1.6, 0.6, 0.15, 0.9, 0.16, 0.35 + R() * 0.3, 15);
     }
   }
 
