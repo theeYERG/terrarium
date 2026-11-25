@@ -346,12 +346,12 @@ function frame() {
   gas.uniforms.uTime.value = elapsed;
   gas.uniforms.uNight.value = night;
   scene.environmentIntensity = 0.1 + 0.3 * sky.dayFactor;
-  renderer.toneMappingExposure = 1.0 + night * 0.25;
+  renderer.toneMappingExposure = 1.0 + night * 0.1;
   if (!sky.running) ui.timeSlider.value = String(sky.time);
   else if (Math.random() < 0.05) ui.timeSlider.value = String(sky.time);
   glow.update(dt, elapsed);
   for (const l of glow.lights) {
-    if (l.intensity > 8 && Math.random() < dt * 3 * (l.intensity / 60)) particles.ember(l.position.x, l.position.y, l.position.z);
+    if (l.intensity > 6 && Math.random() < dt * 1.5 * (l.intensity / 32)) particles.ember(l.position.x, l.position.y, l.position.z);
   }
   particles.update(dt);
   debris.update(dt, elapsed);

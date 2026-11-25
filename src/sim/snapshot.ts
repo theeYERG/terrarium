@@ -103,6 +103,7 @@ export function decodeWorld(w: World, data: Uint8Array): boolean {
   unrle(rd, (i, v) => { life[i] = v & 255; flags[i] = v >> 8; });
   w.stamp.fill(0);
   w.removedStruct.length = 0;
+  w.newSolids.length = 0;
   w.explosions.length = 0;
   w.hot.fill(1);
   w.markAllDirty();

@@ -29,7 +29,7 @@ void main() {
   p.y += sin(uTime * 2.1 + vSeed * 12.0) * 0.2;
   vec4 mv = modelViewMatrix * vec4(p, 1.0);
   float size;
-  if (vKind < 0.5) size = (1.4 + vLife * 1.2) * (0.8 + 0.4 * sin(uTime * 18.0 + vSeed * 50.0));
+  if (vKind < 0.5) size = (0.9 + vLife * 0.9) * (0.8 + 0.4 * sin(uTime * 18.0 + vSeed * 50.0));
   else if (vKind < 1.5) size = 2.4 + (1.0 - vLife) * 2.6;
   else size = 2.2 + (1.0 - vLife) * 2.4;
   gl_PointSize = size * uScale / -mv.z;
@@ -48,9 +48,9 @@ void main() {
   if (d > 0.5) discard;
   float soft = smoothstep(0.5, 0.0, d);
   if (vKind < 0.5) {
-    vec3 col = mix(vec3(1.0, 0.15, 0.02), vec3(1.0, 0.75, 0.25), vLife);
-    col = mix(col, vec3(1.0, 0.95, 0.7), smoothstep(0.75, 1.0, vLife) * 0.6);
-    gl_FragColor = vec4(col * (2.2 + vLife * 2.5), soft * soft * (0.35 + vLife * 0.5));
+    vec3 col = mix(vec3(1.0, 0.12, 0.01), vec3(1.0, 0.55, 0.1), vLife);
+    col = mix(col, vec3(1.0, 0.8, 0.35), smoothstep(0.8, 1.0, vLife) * 0.5);
+    gl_FragColor = vec4(col * (1.3 + vLife * 1.6), soft * soft * (0.22 + vLife * 0.38));
   } else if (vKind < 1.5) {
     vec3 col = mix(vec3(0.18, 0.18, 0.2), vec3(0.32, 0.32, 0.34), vSeed) * (1.0 - uNight * 0.6);
     gl_FragColor = vec4(col, soft * 0.42 * min(1.0, vLife * 2.5));
@@ -279,8 +279,8 @@ export class Particles {
 
   ember(x: number, y: number, z: number) {
     const R = Math.random;
-    this.sparks.spawn(x + (R() - 0.5) * 2, y, z + (R() - 0.5) * 2, (R() - 0.5) * 1.5, 2 + R() * 3, (R() - 0.5) * 1.5,
-      3.5, 1.1, 0.2, 1, 0.22 + R() * 0.12, 1.2 + R() * 1.6, -0.6);
+    this.sparks.spawn(x + (R() - 0.5) * 3, y + R() * 2, z + (R() - 0.5) * 3, (R() - 0.5) * 1.5, 2 + R() * 3, (R() - 0.5) * 1.5,
+      2.4, 0.8, 0.15, 1, 0.12 + R() * 0.08, 1.0 + R() * 1.4, -0.6);
   }
 
   dust(x: number, y: number, z: number, m: number) {
@@ -383,7 +383,8 @@ export class GlowLights {
   set(data: number[]) {
     this.targets = [];
     for (let k = 0; k + 4 < data.length + 1 && k / 5 < this.lights.length; k += 5) {
-      this.targets.push({ x: data[k], y: data[k + 1], z: data[k + 2], i: data[k + 3], fire: data[k + 4] });
+      // nudge off the voxel grid: a light exactly on a face makes a zero-length light vector (NaN)
+      this.targets.push({ x: data[k] + 0.37, y: data[k + 1] + 0.41, z: data[k + 2] + 0.29, i: data[k + 3], fire: data[k + 4] });
     }
   }
 
@@ -393,7 +394,7 @@ export class GlowLights {
       const t = this.targets[k];
       const target = t ? t.i : 0;
       const flick = t && t.fire ? 0.75 + 0.25 * Math.sin(time * 17 + k * 3) * Math.sin(time * 7.3 + k) : 0.92 + 0.08 * Math.sin(time * 2 + k);
-      const goal = target * 60 * flick;
+      const goal = target * 32 * flick;
       l.intensity += (goal - l.intensity) * Math.min(1, dt * 6);
       if (t) {
         if (l.intensity < 0.5) l.position.set(t.x, t.y, t.z);

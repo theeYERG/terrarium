@@ -38,6 +38,8 @@ export class World {
 
   /** Cells where a structural voxel disappeared this tick: seeds for the collapse check. */
   removedStruct: number[] = [];
+  /** Freshly formed solids (e.g. quenched lava) that must prove they're supported. */
+  newSolids: number[] = [];
   events: SimEvent[] = [];
   /** Pending explosions: x, y, z, radius */
   explosions: number[] = [];
@@ -138,6 +140,7 @@ export class World {
     this.dirty.fill(1);
     this.hot.fill(0);
     this.removedStruct.length = 0;
+    this.newSolids.length = 0;
     this.explosions.length = 0;
   }
 

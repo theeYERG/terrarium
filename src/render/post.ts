@@ -37,6 +37,23 @@ const TiltShift = (horizontal: boolean) => ({
     }`,
 });
 
+// Replaces NaN / Inf pixels with black so one bad pixel can't be smeared over the
+// whole frame by the bloom blur.
+const Sanitize = {
+  uniforms: { tDiffuse: { value: null } },
+  vertexShader: /* glsl */ `
+    varying vec2 vUv;
+    void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+  fragmentShader: /* glsl */ `
+    uniform sampler2D tDiffuse;
+    varying vec2 vUv;
+    void main() {
+      vec4 c = texture2D(tDiffuse, vUv);
+      if (any(isnan(c)) || any(isinf(c))) c = vec4(0.0, 0.0, 0.0, 1.0);
+      gl_FragColor = min(c, vec4(64.0));
+    }`,
+};
+
 export class PostFX {
   composer: EffectComposer;
   bloom: UnrealBloomPass;
@@ -52,6 +69,7 @@ export class PostFX {
     const rt = new THREE.WebGLRenderTarget(size.x, size.y, { type: THREE.HalfFloatType, samples: 4 });
     this.composer = new EffectComposer(renderer, rt);
     this.composer.addPass(new RenderPass(scene, camera));
+    this.composer.addPass(new ShaderPass(Sanitize));
     this.bloom = new UnrealBloomPass(new THREE.Vector2(size.x / 2, size.y / 2), 0.6, 0.5, 1.35);
     this.composer.addPass(this.bloom);
     this.tiltH = new ShaderPass(TiltShift(true));

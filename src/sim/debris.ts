@@ -2,7 +2,7 @@
 // Simulated as point masses with gravity; when they hit something they turn back into voxels.
 
 import { LAYER, SX, SY, SZ } from './constants.ts';
-import { M, State, T_MOVABLE, T_STATE } from './materials.ts';
+import { State, T_DENSITY, T_MOVABLE, T_STATE } from './materials.ts';
 import type { World } from './world.ts';
 
 export const MAX_DEBRIS = 12000;
@@ -79,7 +79,8 @@ export class Debris {
         const c = this.cellAt(nx, ny, nz);
         if (c >= 0) {
           const cm = w.mat[c];
-          const blocked = !T_MOVABLE[cm] && (isLiquid || T_STATE[cm] !== State.LIQUID);
+          // solids sink through liquids, unless they're lighter (ice and wood float)
+          const blocked = !T_MOVABLE[cm] && (isLiquid || T_STATE[cm] !== State.LIQUID || T_DENSITY[m] < T_DENSITY[cm]);
           if (blocked) {
             landed = this.land(k, x, y, z);
             break;
@@ -144,8 +145,4 @@ export class Debris {
     }
     return out;
   }
-}
-
-export function isDebrisSolid(m: number) {
-  return m !== M.AIR;
 }

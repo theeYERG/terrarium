@@ -331,9 +331,11 @@ export class Simulator {
       const n = this.neighbour(i, x, y, z, k);
       if (n < 0) continue;
       const nm = mat[n];
-      if (nm === M.WATER || nm === M.ICE || nm === M.SNOW) {
-        // quench: lava hardens into obsidian, water flashes to steam
+      if ((nm === M.WATER || nm === M.ICE || nm === M.SNOW) && w.rng.next() < 0.3) {
+        // quench: lava hardens into obsidian, water flashes to steam (not instantly, so
+        // poured lava plunges in a little way before it freezes)
         w.set(i, M.OBSIDIAN, 520);
+        if (w.newSolids.length < 4000) w.newSolids.push(i); // sinks if it isn't resting on anything
         w.set(n, M.STEAM, 140, 120 + w.rng.int(120));
         if (this.sizzleCooldown === 0) {
           w.event({ t: 'sizzle', x: x + 0.5, y: y + 1, z: z + 0.5 });
@@ -520,7 +522,10 @@ export class Simulator {
           } else if (nt < T_FREEZE[m]) {
             if (m === M.LAVA && (flags[i] & F_SOURCE)) { /* never */ }
             else if (m === M.STEAM) { if (rng.next() < 0.015) w.set(i, M.WATER, 60); }
-            else if (rng.next() < 0.2) w.set(i, T_FREEZE_TO[m], m === M.WATER ? -1 : nt);
+            else if (rng.next() < 0.2) {
+              w.set(i, T_FREEZE_TO[m], m === M.WATER ? -1 : nt);
+              if (m === M.LAVA && w.newSolids.length < 4000) w.newSolids.push(i);
+            }
           }
           const f = T_FLAM[m];
           if (f > 0 && nt >= T_IGNITE[m] && rng.next() < f * 0.35) this.ignite(i, m);

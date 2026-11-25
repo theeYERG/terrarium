@@ -26,7 +26,7 @@ export class Structure {
   run(): void {
     const w = this.w;
     const removed = w.removedStruct;
-    if (removed.length === 0) return;
+    if (removed.length === 0 && w.newSolids.length === 0) return;
     // A fresh numbering pass: reset ids when they get large.
     if (this.comp > 2e9) {
       this.visit.fill(0);
@@ -48,6 +48,8 @@ export class Structure {
       if (y < SY - 1) seeds.push(i + LAYER);
     }
     removed.length = 0;
+    for (const i of w.newSolids) seeds.push(i);
+    w.newSolids.length = 0;
 
     let budget = 120000; // max BFS steps per tick
     for (const s of seeds) {
