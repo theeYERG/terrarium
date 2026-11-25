@@ -30,7 +30,7 @@ for (const k of Object.keys(SPREAD)) MIN_SPREAD[+k] = SPREAD[+k];
 for (const k of Object.keys(FLOW)) { const m = +k; GAIN[m] = FLOW[m][0]; KEEP[m] = FLOW[m][1]; MINH[m] = FLOW[m][2]; }
 
 export const MAX_DROPS = 6000;
-const DROP_MASS = 0.06;
+const DROP_MASS = 0.045;
 const GRAVITY = 30;
 
 export interface LiquidHooks {

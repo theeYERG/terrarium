@@ -475,7 +475,7 @@ function base64ToBytes(s: string): Uint8Array {
 
 // test / debugging hooks (used by the Playwright scenarios)
 (window as unknown as Record<string, unknown>).__terrarium = {
-  send, state, rig, stats, chunks, sky, ui, post,
+  send, state, rig, stats, chunks, sky, ui, post, bodies, drops,
   get ready() { return worldReady; },
   get info() { return islandInfo; },
   get trees() { return Array.from(lastTrees); },

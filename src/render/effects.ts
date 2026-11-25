@@ -156,9 +156,9 @@ export class Particles {
 
   splash(x: number, y: number, z: number, color = [0.5, 0.75, 1.0]) {
     const R = Math.random;
-    for (let i = 0; i < 18; i++) {
-      const a = R() * Math.PI * 2, sp = 2 + R() * 4;
-      this.puffs.spawn(x, y, z, Math.cos(a) * sp, 4 + R() * 6, Math.sin(a) * sp, color[0], color[1], color[2], 0.75, 0.35 + R() * 0.3, 0.6 + R() * 0.4, 22);
+    for (let i = 0; i < 8; i++) {
+      const a = R() * Math.PI * 2, sp = 2 + R() * 3;
+      this.puffs.spawn(x, y, z, Math.cos(a) * sp, 3 + R() * 5, Math.sin(a) * sp, color[0], color[1], color[2], 0.45, 0.25 + R() * 0.2, 0.45 + R() * 0.3, 22);
     }
   }
 

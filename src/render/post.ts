@@ -72,7 +72,7 @@ export class PostFX {
     this.composer = new EffectComposer(renderer, rt);
     this.composer.addPass(new RenderPass(scene, camera));
     this.composer.addPass(new ShaderPass(Sanitize));
-    this.bloom = new UnrealBloomPass(new THREE.Vector2(size.x / 2, size.y / 2), 0.6, 0.5, 1.35);
+    this.bloom = new UnrealBloomPass(new THREE.Vector2(size.x / 2, size.y / 2), 0.6, 0.5, 1.6);
     this.composer.addPass(this.bloom);
     this.tiltH = new ShaderPass(TiltShift(true));
     this.tiltV = new ShaderPass(TiltShift(false));

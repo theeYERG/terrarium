@@ -40,6 +40,8 @@ export class TickClock {
 
 interface BodyView {
   kind: number; mat: number; shape: number;
+  /** last rendered (interpolated) position and scale, for tests / debugging */
+  cur?: THREE.Vector3; curQ?: THREE.Quaternion; curScale?: number;
   p0: THREE.Vector3; p1: THREE.Vector3; q0: THREE.Quaternion; q1: THREE.Quaternion;
   s0: number; s1: number;
   seen: boolean;
@@ -51,7 +53,7 @@ const flatMat = (opts: THREE.MeshStandardMaterialParameters = {}) =>
 
 export class BodyRenderer {
   group = new THREE.Group();
-  private views = new Map<number, BodyView>();
+  views = new Map<number, BodyView>();
   private grains: THREE.InstancedMesh;
   private rocks: THREE.InstancedMesh[] = [];
   private chunkShapes = new Map<number, ChunkSpawn>();
@@ -142,7 +144,11 @@ export class BodyRenderer {
         if (v.kind === KIND_CHUNK) v.mesh = this.buildChunk(id);
         this.views.set(id, v);
       } else {
-        v.p0.copy(v.p1); v.q0.copy(v.q1); v.s0 = v.s1;
+        // continue from where the body is drawn right now, so a tick arriving early or late
+        // never makes it jump
+        v.p0.copy(v.cur ?? v.p1);
+        v.q0.copy(v.curQ ?? v.q1);
+        v.s0 = v.curScale ?? v.s1;
         v.p1.copy(p); v.q1.copy(q); v.s1 = data[o + 10];
         v.seen = true;
       }
@@ -162,6 +168,9 @@ export class BodyRenderer {
       const p = this.tmpP.lerpVectors(v.p0, v.p1, alpha);
       const q = this.tmpQ.slerpQuaternions(v.q0, v.q1, alpha);
       const s = v.s0 + (v.s1 - v.s0) * alpha;
+      (v.cur ??= new THREE.Vector3()).copy(p);
+      (v.curQ ??= new THREE.Quaternion()).copy(q);
+      v.curScale = s;
       if (v.kind === KIND_TREE) {
         let tp = this.treePose.get(v.shape);
         if (!tp) { tp = { p: new THREE.Vector3(), q: new THREE.Quaternion() }; this.treePose.set(v.shape, tp); }
@@ -219,13 +228,13 @@ export class DropRenderer {
   private dummy = new THREE.Object3D();
   private up = new THREE.Vector3(0, 1, 0);
   private dir = new THREE.Vector3();
-  private cWater = new THREE.Color(0x7cc8e8);
+  private cWater = new THREE.Color(0x6cc0e0);
   private cOil = new THREE.Color(0x3a2a18);
   private cAcid = new THREE.Color(0x9cf04a);
 
   constructor(scene: THREE.Scene) {
     const g = new THREE.OctahedronGeometry(0.22, 0);
-    this.water = new THREE.InstancedMesh(g, flatMat({ transparent: true, opacity: 0.8, roughness: 0.15, envMapIntensity: 0.8 }), 6000);
+    this.water = new THREE.InstancedMesh(g, flatMat({ transparent: true, opacity: 0.88, roughness: 0.2, envMapIntensity: 0.5 }), 6000);
     this.lava = new THREE.InstancedMesh(g, flatMat({ color: 0xff7020, emissive: 0xff5010, emissiveIntensity: 2.5 }), 2000);
     for (const im of [this.water, this.lava]) {
       im.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
@@ -250,8 +259,9 @@ export class DropRenderer {
       const sp = Math.hypot(vx, vy, vz);
       if (sp > 0.01) this.dummy.quaternion.setFromUnitVectors(this.up, this.dir.set(vx / sp, vy / sp, vz / sp));
       // bigger blobs for heavier drops, gently stretched along their motion
-      const s = 0.45 + Math.min(1.4, d[o + 7] * 9);
-      this.dummy.scale.set(s, s * (1 + Math.min(1.8, sp * 0.07)), s);
+      // fat, overlapping, stretched drops so a stream reads as a ribbon of water
+      const s = 0.75 + Math.min(1.3, d[o + 7] * 11);
+      this.dummy.scale.set(s, s * (1 + Math.min(2.6, sp * 0.11)), s);
       this.dummy.updateMatrix();
       const type = d[o + 6];
       if (type === M.LAVA) {

@@ -13,7 +13,7 @@ function smooth(a: number, b: number, x: number) {
 }
 
 const C = (h: number) => new THREE.Color(h);
-const DAY_TOP = C(0x6fa8e6), DAY_HOR = C(0xf4dcc8);
+const DAY_TOP = C(0x78b4ec), DAY_HOR = C(0xd4ebf7);
 const SET_TOP = C(0x6a6aa8), SET_HOR = C(0xf7a98a);
 const NIGHT_TOP = C(0x0b1030), NIGHT_HOR = C(0x2a2f5a);
 
@@ -67,7 +67,7 @@ export class SkyRig {
           float y = d.y;
           vec3 col = y > 0.0 ? mix(uHor, uTop, pow(clamp(y, 0.0, 1.0), 0.55)) : mix(uHor, uBot, pow(clamp(-y, 0.0, 1.0), 0.4));
           float sd = dot(d, uSun);
-          col += uSunCol * (pow(max(sd, 0.0), 8.0) * 0.25 + pow(max(sd, 0.0), 120.0) * 0.8);
+          col += uSunCol * (pow(max(sd, 0.0), 6.0) * 0.32 + pow(max(sd, 0.0), 120.0) * 0.8) * vec3(1.0, 0.82, 0.68);
           col += uSunCol * smoothstep(0.9993, 0.9996, sd) * 6.0;
           float md = dot(d, uMoon);
           float moon = smoothstep(0.9992, 0.9995, md);
@@ -126,7 +126,7 @@ export class SkyRig {
 
     // cloud sea under (and around) the island
     const cloudTex = makeCloudTexture();
-    for (let i = 0; i < 44; i++) {
+    for (let i = 0; i < 30; i++) {
       const mat = new THREE.SpriteMaterial({ map: cloudTex, transparent: true, depthWrite: false, opacity: 0.85, fog: true });
       const s = new THREE.Sprite(mat);
       const ring = i < 30;
@@ -136,7 +136,7 @@ export class SkyRig {
       const size = ring ? 70 + Math.random() * 90 : 50 + Math.random() * 50;
       s.scale.set(size, size * 0.55, 1);
       s.userData.speed = 0.6 + Math.random() * 1.2;
-      s.userData.baseOpacity = ring ? 0.6 : 0.4;
+      s.userData.baseOpacity = ring ? 0.42 : 0.3;
       this.clouds.push(s);
       this.group.add(s);
     }
@@ -166,7 +166,8 @@ export class SkyRig {
 
     const top = lerpColor(lerpColor(NIGHT_TOP, DAY_TOP, day), SET_TOP, dusk * 0.6);
     const hor = lerpColor(lerpColor(NIGHT_HOR, DAY_HOR, day), SET_HOR, dusk * 0.85);
-    const bot = lerpColor(lerpColor(hor, top, 0.75), C(0x9fb8e8), 0.35 * day);
+    // below the horizon: a soft pastel blue that warms toward the horizon
+    const bot = lerpColor(lerpColor(hor, top, 0.5), C(0xa9d2f4), 0.6 * day);
     const sunCol = lerpColor(C(0xffb070), C(0xfff2dc), smooth(0.0, 0.4, elev));
     const u = this.skyMat.uniforms;
     u.uTop.value.copy(top);
@@ -187,7 +188,7 @@ export class SkyRig {
     this.sun.target.position.copy(this.center);
     if (useSun) {
       this.sun.color.copy(sunCol);
-      this.sun.intensity = 2.9 * fade;
+      this.sun.intensity = 2.65 * fade;
     } else {
       this.sun.color.set(0xa8bcff);
       this.sun.intensity = 1.2 * fade;
@@ -209,7 +210,7 @@ export class SkyRig {
       s.position.x += s.userData.speed * dt;
       if (s.position.x > this.center.x + 260) s.position.x -= 520;
       const m = s.material as THREE.SpriteMaterial;
-      m.color.copy(lerpColor(lerpColor(C(0x2a3350), C(0xffffff), day), C(0xffc8a0), dusk * 0.7));
+      m.color.copy(lerpColor(lerpColor(C(0x2a3350), C(0xfffaf4), day), C(0xffc0a8), dusk * 0.7));
       m.opacity = s.userData.baseOpacity * (0.55 + 0.45 * day);
     }
   }
