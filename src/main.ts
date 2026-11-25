@@ -31,6 +31,7 @@ renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.0;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFShadowMap;
+renderer.info.autoReset = false;
 
 const scene = new THREE.Scene();
 const pmrem = new THREE.PMREMGenerator(renderer);
@@ -68,7 +69,7 @@ let seed = DEFAULT_SEED;
 let started = false;
 let worldReady = false;
 let undoDepth = 0;
-let islandInfo: { center: number[]; lake: number[]; mountain: number[]; waterfall: number[] } | null = null;
+let islandInfo: { center: number[]; lake: number[]; mountain: number[]; waterfall: number[]; cave: number[] } | null = null;
 let framedOnce = false;
 
 /** Put the camera on the lake side so the waterfall and the peak are both in view. */
@@ -158,6 +159,7 @@ ui.showSpeed(1);
 ui.showMuted(sound.muted);
 ui.setSeed(seed);
 document.getElementById('title-logo')!.innerHTML = LOGO;
+if (matchMedia('(pointer: coarse)').matches) document.getElementById('hint')!.textContent = 'One finger to use a tool · two fingers to orbit and zoom';
 
 // ───────────────────────────── input ─────────────────────────────
 const input = new ToolInput(canvas, rig, chunks.mats, state);
@@ -275,7 +277,8 @@ enterBtn.addEventListener('click', () => {
   sound.start();
   document.getElementById('title')!.classList.add('gone');
   document.getElementById('hud')!.classList.remove('hidden');
-  setTimeout(() => ui.toast('Right-drag to orbit · left-click to build · press ? for controls'), 700);
+  const touch = matchMedia('(pointer: coarse)').matches;
+  setTimeout(() => ui.toast(touch ? 'One finger: use tool · two fingers: orbit & zoom' : 'Right-drag to orbit · left-click to build · press ? for controls'), 700);
 });
 
 // ───────────────────────────── boot ─────────────────────────────
@@ -309,6 +312,7 @@ const tmpColor = new THREE.Color();
 function frame() {
   requestAnimationFrame(frame);
   const t0 = performance.now();
+  renderer.info.reset();
   const dt = Math.min(0.05, (t0 - lastFrame) / 1000);
   lastFrame = t0;
   elapsed += dt;
@@ -385,6 +389,7 @@ function frame() {
     );
   }
   (window as unknown as { __fps: number }).__fps = fps;
+  (window as unknown as { __frameMs: number }).__frameMs = frameMsAvg;
 }
 
 function adapt() {

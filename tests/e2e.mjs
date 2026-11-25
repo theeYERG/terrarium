@@ -187,8 +187,9 @@ if (run('blast')) {
 if (run('perf')) {
   await page.evaluate(() => H.look(64, 30, 64, 170, 0.8, 0.6));
   await wait(3000);
-  const perf = await page.evaluate(() => ({ fps: window.__fps, ...window.__terrarium.stats }));
-  ok('frame rate stays above 55 fps (headless GPU)', perf.fps > 55, `fps ${perf.fps.toFixed(0)}, sim ${perf.tps.toFixed(0)} tps @ ${perf.tickMs.toFixed(1)} ms, mesh ${perf.meshMs.toFixed(1)} ms`);
+  const perf = await page.evaluate(() => ({ fps: window.__fps, frameMs: window.__frameMs, ...window.__terrarium.stats }));
+  ok('frame rate stays above 55 fps (headless GPU)', perf.fps > 55, `fps ${perf.fps.toFixed(0)}, main-thread cpu ${perf.frameMs.toFixed(2)} ms/frame, sim ${perf.tps.toFixed(0)} tps @ ${perf.tickMs.toFixed(1)} ms, mesh ${perf.meshMs.toFixed(1)} ms`);
+  ok('main thread CPU per frame < 8 ms', perf.frameMs < 8, `${perf.frameMs.toFixed(2)} ms`);
   await shot('overview');
 }
 

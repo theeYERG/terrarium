@@ -66,6 +66,9 @@ export class Debris {
       // inside a liquid: heavy drag
       const here = this.cellAt(this.px[k], this.py[k], this.pz[k]);
       if (here >= 0 && T_STATE[w.mat[here]] === State.LIQUID) {
+        if (vy < -6 && w.events.length < 40 && w.rng.next() < 0.25) {
+          w.event({ t: 'splash', x: this.px[k], y: this.py[k] + 0.5, z: this.pz[k] });
+        }
         vx *= 0.8; vy *= 0.8; vz *= 0.8;
       } else {
         vx *= 0.995; vz *= 0.995;

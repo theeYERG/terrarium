@@ -55,6 +55,16 @@ function recordMesh(m: ChunkMesh) {
   lavaPos[m.c * 3 + 2] = m.lavaPos[2];
 }
 
+/** Run the sim for a moment off-screen so streams, the waterfall and the lake surface
+ *  have settled before the player sees the island. */
+function warmUp(ticks: number) {
+  for (let k = 0; k < ticks; k++) {
+    sim.step();
+    if (k % 40 === 0) post({ t: 'progress', p: 0.15 + 0.25 * (k / ticks), label: 'Letting the water settle…' });
+  }
+  world.events.length = 0;
+}
+
 function meshAll(label: string) {
   world.dirty.fill(0);
   let batch: ChunkMesh[] = [];
@@ -216,7 +226,10 @@ ctx.onmessage = (ev: MessageEvent<ToWorker>) => {
       post({ t: 'progress', p: 0.05, label: 'Raising the island…' });
       if (msg.save) ok = decodeWorld(world, msg.save);
       let info = null;
-      if (!ok) info = generateIsland(world, msg.seed);
+      if (!ok) {
+        info = generateIsland(world, msg.seed);
+        warmUp(240);
+      }
       post({ t: 'progress', p: 0.4, label: 'Carving voxels…' });
       meshAll('Carving voxels…');
       ready = true;
@@ -227,6 +240,7 @@ ctx.onmessage = (ev: MessageEvent<ToWorker>) => {
       pushUndo();
       sim.debris.clear();
       const info = generateIsland(world, msg.seed);
+      warmUp(240);
       meshAll('Regenerating…');
       post({ t: 'ready', seed: world.seed, info });
       break;

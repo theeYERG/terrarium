@@ -190,11 +190,11 @@ export class SkyRig {
       this.sun.intensity = 2.7 * fade;
     } else {
       this.sun.color.set(0x9db4ff);
-      this.sun.intensity = 0.55 * fade;
+      this.sun.intensity = 0.9 * fade;
     }
     this.hemi.color.copy(lerpColor(C(0x2a3a66), C(0xc4ddff), day));
     this.hemi.groundColor.copy(lerpColor(C(0x1a1c28), C(0x8d97a8), day)); // bounce light off the cloud sea
-    this.hemi.intensity = 0.7 + 1.6 * day;
+    this.hemi.intensity = 1.0 + 1.3 * day;
     this.fill.position.copy(this.center).add(new THREE.Vector3(-sunDir.x * 120, -90, -sunDir.z * 120));
     this.fill.intensity = 0.2 + 2.3 * day;
     this.fill.color.copy(lerpColor(C(0x6070a0), C(0xd2defa), day));

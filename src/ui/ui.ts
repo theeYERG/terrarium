@@ -117,6 +117,7 @@ export class UI {
     const set = this.btn('settings', 'World & visual settings', () => this.toggle(this.settings));
     const help = this.btn('help', 'Controls <kbd>?</kbd>', () => this.toggle(this.help));
     const sep = () => { const s = document.createElement('div'); s.className = 'sep'; return s; };
+    for (const b of [stepBtn, clear, load, this.cineBtn, this.fpsBtn]) b.classList.add('desk');
     top.append(this.pauseBtn, stepBtn, this.speedBtn, sep(), this.undoBtn, regen, clear, save, load, sep(), shot, this.cineBtn, this.fpsBtn, this.muteBtn, set, help);
     hud.appendChild(top);
 
@@ -197,10 +198,11 @@ export class UI {
     const go = () => {
       const v = this.seedInput.value.trim();
       this.a.regen(v ? seedFromString(v) : null);
+      this.settings.classList.add('hidden');
     };
     this.settings.querySelector('#go')!.addEventListener('click', go);
     this.seedInput.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter') go(); });
-    this.settings.querySelector('#rand')!.addEventListener('click', () => this.a.regen(null));
+    this.settings.querySelector('#rand')!.addEventListener('click', () => { this.a.regen(null); this.settings.classList.add('hidden'); });
     const chk = (id: string, fn: (v: boolean) => void) => {
       const el = this.settings.querySelector<HTMLInputElement>('#' + id)!;
       el.addEventListener('change', () => fn(el.checked));

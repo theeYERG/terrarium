@@ -170,7 +170,8 @@ const FRAG_NORMAL = /* glsl */ `
     float h0 = vnoise(p + vec3(tt * 0.6, 0.0, tt * 0.4)) + 0.5 * vnoise(p * 2.3 + vec3(-tt * 0.9, 0.0, tt * 0.7));
     float hx = vnoise(p + vec3(e, 0.0, 0.0) + vec3(tt * 0.6, 0.0, tt * 0.4)) + 0.5 * vnoise((p + vec3(e, 0.0, 0.0)) * 2.3 + vec3(-tt * 0.9, 0.0, tt * 0.7));
     float hz = vnoise(p + vec3(0.0, 0.0, e) + vec3(tt * 0.6, 0.0, tt * 0.4)) + 0.5 * vnoise((p + vec3(0.0, 0.0, e)) * 2.3 + vec3(-tt * 0.9, 0.0, tt * 0.7));
-    vec3 nW = normalize(vec3((h0 - hx) * 0.9, 1.0, (h0 - hz) * 0.9));
+    float amp = 0.9 * smoothstep(260.0, 60.0, length(cameraPosition - vWPos));
+    vec3 nW = normalize(vec3((h0 - hx) * amp, 1.0, (h0 - hz) * amp));
     normal = normalize((viewMatrix * vec4(nW, 0.0)).xyz);
   }
 }
@@ -201,7 +202,7 @@ const FRAG_ALPHA = /* glsl */ `
   }
   if (ak == 3) {
     float sparkle = pow(vnoise(vWPos * 1.6 + vec3(uTime * 0.9, 0.0, -uTime * 0.7)), 10.0) * 2.0;
-    if (vWNrm.y > 0.5) totalEmissiveRadiance += vec3(0.7, 0.85, 1.0) * sparkle * (1.0 - uNight) * 0.15;
+    if (vWNrm.y > 0.5) totalEmissiveRadiance += vec3(0.7, 0.85, 1.0) * sparkle * (1.0 - uNight) * 0.15 * smoothstep(200.0, 50.0, length(cameraPosition - vWPos));
   }
   if (ak == 8) totalEmissiveRadiance += vec3(0.25, 0.6, 0.05) * 0.5;
   diffuseColor.a = clamp(a + fres * 0.35, 0.0, 1.0);

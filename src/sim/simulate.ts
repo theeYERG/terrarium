@@ -75,7 +75,7 @@ export class Simulator {
     for (let c = 0; c < CHUNKS; c++) {
       if (w.awake[c] || w.hot[c] > 1) {
         this.heatMask[c] = 1;
-        if (w.hot[c] > 1) {
+        if (w.hot[c] > 6) {
           const cx = c % CX, cz = Math.floor(c / CX) % CZ, cy = Math.floor(c / (CX * CZ));
           if (cx > 0) this.heatMask[c - 1] = 1;
           if (cx < CX - 1) this.heatMask[c + 1] = 1;
@@ -639,9 +639,10 @@ export class Simulator {
     const rng = w.rng;
     const mat = w.mat;
     const R = r * 1.5;
-    const x0 = Math.max(0, Math.floor(cx - R)), x1 = Math.min(SX - 1, Math.ceil(cx + R));
-    const y0 = Math.max(0, Math.floor(cy - R)), y1 = Math.min(SY - 1, Math.ceil(cy + R));
-    const z0 = Math.max(0, Math.floor(cz - R)), z1 = Math.min(SZ - 1, Math.ceil(cz + R));
+    const RG = r * 2.2; // gunpowder further out still gets set off
+    const x0 = Math.max(0, Math.floor(cx - RG)), x1 = Math.min(SX - 1, Math.ceil(cx + RG));
+    const y0 = Math.max(0, Math.floor(cy - RG)), y1 = Math.min(SY - 1, Math.ceil(cy + RG));
+    const z0 = Math.max(0, Math.floor(cz - RG)), z1 = Math.min(SZ - 1, Math.ceil(cz + RG));
     let thrown = 0;
     const maxThrown = 900;
     for (let y = y0; y <= y1; y++) {
@@ -649,10 +650,11 @@ export class Simulator {
         for (let x = x0; x <= x1; x++) {
           const dx = x + 0.5 - cx, dy = y + 0.5 - cy, dz = z + 0.5 - cz;
           const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
-          if (dist > R) continue;
+          if (dist > RG) continue;
           const i = x + z * SX + y * LAYER;
           const m = mat[i];
           const d = dist / r;
+          if (dist > R && m !== M.GUNPOWDER) continue;
           if (m === M.GUNPOWDER) {
             // nearby powder isn't blown away, it goes off too: chain reaction
             w.temp[i] = Math.max(w.temp[i], 450);

@@ -15,7 +15,7 @@ export interface ToolApply {
 
 export type ToMain =
   | { t: 'progress'; p: number; label: string }
-  | { t: 'ready'; seed: number; info: { center: number[]; lake: number[]; mountain: number[]; waterfall: number[] } | null }
+  | { t: 'ready'; seed: number; info: { center: number[]; lake: number[]; mountain: number[]; waterfall: number[]; cave: number[] } | null }
   | { t: 'chunks'; list: ChunkMesh[]; full: boolean }
   | {
     t: 'frame';

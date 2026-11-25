@@ -11,6 +11,7 @@ export interface IslandInfo {
   lake: [number, number, number];
   mountain: [number, number, number];
   waterfall: [number, number, number];
+  cave: [number, number, number];
 }
 
 function smoothstep(a: number, b: number, x: number) {
@@ -175,6 +176,7 @@ export function generateIsland(world: World, seed: number): IslandInfo {
     }
   };
   carve(ccx, ccy, ccz, 7, ccy - 4);
+  const caveMouth: [number, number, number] = [ccx, ccy, ccz];
   // tunnel
   {
     let ox = -(cx - mx), oz = -(cz - mz);
@@ -190,7 +192,10 @@ export function generateIsland(world: World, seed: number): IslandInfo {
       py = Math.min(29, py + 0.07);
       carve(px, py, pz, 2.6 + 0.6 * n.noise2(s * 0.2, 9), py - 2);
       const ci = Math.round(px) + Math.round(pz) * SX;
-      if (Math.round(px) < 0 || Math.round(px) >= SX || Math.round(pz) < 0 || Math.round(pz) >= SZ || top[ci] < 0 || bot[ci] > py) outside++;
+      if (Math.round(px) < 0 || Math.round(px) >= SX || Math.round(pz) < 0 || Math.round(pz) >= SZ || top[ci] < 0 || bot[ci] > py) {
+        if (outside === 0) { caveMouth[0] = px; caveMouth[1] = py; caveMouth[2] = pz; }
+        outside++;
+      }
     }
   }
   // lava pocket in the chamber floor
@@ -248,6 +253,7 @@ export function generateIsland(world: World, seed: number): IslandInfo {
   world.markAllDirty();
   return {
     waterfall: [fx, WL, fz],
+    cave: caveMouth,
     center: [cx, WL, cz],
     lake: [lx, WL, lz],
     mountain: [mx, 50, mz],

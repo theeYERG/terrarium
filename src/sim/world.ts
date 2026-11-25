@@ -51,7 +51,10 @@ export class World {
 
   defaultTemp(m: number, y: number): number {
     const d = MATERIALS[m].defaultTemp;
-    return d === null ? this.ambient[y] : d;
+    if (d !== null) return d;
+    // fresh water is never spawned frozen, even high on the mountain
+    if (m === M.WATER) return Math.max(this.ambient[y], 4);
+    return this.ambient[y];
   }
 
   /** Mark a cell's chunk (and the touching neighbour chunks) awake and in need of a remesh. */

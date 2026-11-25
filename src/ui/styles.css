@@ -138,7 +138,7 @@ button.ib:disabled { opacity: 0.35; cursor: default; }
 #inspect .row span:last-child { color: var(--text); font-variant-numeric: tabular-nums; }
 
 /* toasts */
-#toasts { position: absolute; top: 18px; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; gap: 8px; align-items: center; pointer-events: none !important; }
+#toasts { position: absolute; bottom: 96px; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; gap: 8px; align-items: center; pointer-events: none !important; }
 .toast { padding: 8px 16px; font-size: 13px; font-weight: 600; animation: toast 2.4s ease forwards; }
 @keyframes toast { 0% { opacity: 0; transform: translateY(-8px); } 10%, 80% { opacity: 1; transform: none; } 100% { opacity: 0; transform: translateY(-6px); } }
 
@@ -206,9 +206,12 @@ button.ib:disabled { opacity: 0.35; cursor: default; }
   #toolbar { bottom: 10px; padding: 5px; max-width: 98vw; overflow-x: auto; }
   #toolbar button.tool { width: 40px; height: 40px; }
   #toolbar button.tool .key { display: none; }
-  #topbar { top: 10px; right: 8px; flex-wrap: wrap; justify-content: flex-end; max-width: 60vw; }
-  button.ib { width: 34px; height: 34px; }
-  #brand { top: 10px; left: 8px; padding: 8px 10px; }
-  #brand .seed { display: none; }
+  #topbar { top: 10px; right: 8px; padding: 4px; gap: 0; }
+  #topbar .desk, #topbar .sep { display: none; }
+  button.ib { width: 32px; height: 34px; }
+  #brand { top: 10px; left: 8px; padding: 8px; }
+  #brand .name, #brand .seed { display: none; }
+  #toasts { bottom: 170px; width: 90vw; }
+  .toast { text-align: center; }
   #stats { top: 60px; left: 8px; }
 }
